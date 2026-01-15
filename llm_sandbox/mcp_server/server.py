@@ -268,6 +268,7 @@ def execute_code(
                 code=code,
                 libraries=libraries or [],
                 timeout=timeout,
+                clear_plots=False,
             )
             
             # 处理结果
@@ -295,6 +296,7 @@ def execute_code(
                     code=code,
                     libraries=libraries or [],
                     timeout=timeout,
+                    clear_plots=False,
                 )
                 
                 if use_artifact and hasattr(result, "plots") and result.plots:
