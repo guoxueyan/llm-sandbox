@@ -42,7 +42,7 @@ _pool_lock = threading.Lock()
 _session_lock = threading.Lock()
 
 # Session 配置
-SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT", "1800"))  # 30 分钟
+SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT", "3600"))  # 1 小时
 SESSION_CLEANUP_INTERVAL = int(os.environ.get("SESSION_CLEANUP_INTERVAL", "300"))  # 5 分钟
 
 def _get_backend() -> SandboxBackend:
@@ -54,10 +54,21 @@ def _get_backend() -> SandboxBackend:
 def _get_pool_config() -> PoolConfig:
     """Get pool configuration from environment variables."""
     return PoolConfig(
+        # 基础配置
         max_pool_size=int(os.environ.get("POOL_MAX_SIZE", "10")),
         min_pool_size=int(os.environ.get("POOL_MIN_SIZE", "2")),
-        max_idle_time=int(os.environ.get("POOL_MAX_IDLE_TIME", "600")),
+        
+        # 超时配置
+        idle_timeout=float(os.environ.get("POOL_IDLE_TIMEOUT", "7200.0")),
+        acquisition_timeout=float(os.environ.get("POOL_ACQUISITION_TIMEOUT", "30.0")),
+        
+        # 生命周期配置
+        max_container_lifetime=float(os.environ.get("POOL_MAX_LIFETIME", "3600.0")),
+        health_check_interval=float(os.environ.get("POOL_HEALTH_CHECK_INTERVAL", "60.0")),
+        
+        # 策略配置
         exhaustion_strategy=os.environ.get("POOL_EXHAUSTION_STRATEGY", "wait"),
+        enable_prewarming=os.environ.get("POOL_ENABLE_PREWARMING", "true").lower() == "true",
     )
 
 def _get_common_libraries(language: str) -> list[str]:
@@ -197,13 +208,22 @@ def _supports_visualization(language: str) -> bool:
 # ✅ 新增：创建 session
 @mcp.tool()
 def create_session(language: str = "python") -> TextContent:
-    """Create a new debugging session.
+    """Create a new debugging session with a dedicated container.
     
     Args:
-        language: Programming language for the session
+        language: Programming language for the session (default: python)
         
     Returns:
-        TextContent: Session information including session_id
+        TextContent: JSON containing session_id and session info
+        
+    Example response:
+        {
+            "status": "success",
+            "session_id": "uuid-string",
+            "language": "python",
+            "visualization_support": true,
+            "message": "Session created successfully"
+        }
     """
     try:
         # 生成唯一的 session_id
@@ -212,15 +232,16 @@ def create_session(language: str = "python") -> TextContent:
         # 判断是否需要可视化支持
         use_artifact = _supports_visualization(language)
         
-        # 创建 session（会自动绑定容器）
+        # 创建 session（会自动从池中获取或创建容器）
         session = _get_or_create_session(session_id, language, use_artifact)
         
         result = {
+            "status": "success",
             "session_id": session_id,
             "language": language,
             "visualization_support": use_artifact,
-            "status": "created",
-            "message": "Session created successfully. Use this session_id for subsequent execute_code calls."
+            "timeout": SESSION_TIMEOUT,
+            "message": f"Session created successfully. Container will be kept alive for {SESSION_TIMEOUT} seconds of inactivity."
         }
         
         return TextContent(text=json.dumps(result, indent=2), type="text")
@@ -228,95 +249,110 @@ def create_session(language: str = "python") -> TextContent:
     except Exception as e:
         logger.exception("Error creating session")
         return TextContent(
-            text=json.dumps({"error": str(e), "status": "failed"}),
+            text=json.dumps({
+                "status": "error",
+                "error": str(e),
+                "message": "Failed to create session"
+            }, indent=2),
             type="text"
         )
 
 @mcp.tool()
 def execute_code(
     code: str,
-    session_id: Optional[str] = None,  # ✅ 新增：session_id 参数
-    language: str = "python",
+    session_id: str,  # ✅ 改为必填参数（移除 Optional 和默认值）
     libraries: list[str] | None = None,
     timeout: int = 30,
 ) -> list[ImageContent | TextContent]:
-    """Execute code in a secure sandbox environment with session support.
+    """Execute code in a secure sandbox environment with session binding.
 
     Args:
         code: The code to execute
-        session_id: Optional session ID to bind execution to a specific container.
-                   If not provided, a temporary session will be used.
-        language: Programming language (python, javascript, java, cpp, go, r, ruby)
-        libraries: List of libraries/packages to install (if not pre-installed)
+        session_id: Session ID (required). Must be obtained from create_session() first.
+        libraries: List of libraries/packages to install
         timeout: Execution timeout in seconds (default: 30)
 
     Returns:
-        List of content items including execution results and any generated visualizations
-
+        List of content items including execution results and visualizations
+        
+    Error response format:
+        {
+            "status": "error",
+            "error_type": "missing_session_id" | "session_not_found" | "execution_error",
+            "session_id": "provided-session-id" or null,
+            "message": "Error description"
+        }
     """
     results: list[ImageContent | TextContent] = []
 
     try:
-        # ✅ 如果提供了 session_id，使用绑定的 session
-        if session_id:
-            logger.info(f"Executing code in session: {session_id}")
-            use_artifact = _supports_visualization(language)
-            session = _get_or_create_session(session_id, language, use_artifact)
+        # ✅ 检查 session_id 是否为空
+        if not session_id or not session_id.strip():
+            error_result = {
+                "status": "error",
+                "error_type": "missing_session_id",
+                "session_id": None,
+                "message": "session_id is required. Please create a session first using create_session()."
+            }
+            return [TextContent(text=json.dumps(error_result, indent=2), type="text")]
+        
+        logger.info(f"Executing code in session: {session_id}")
+        
+        # ✅ 检查 session 是否存在于池中
+        with _session_lock:
+            if session_id not in _session_bindings:
+                error_result = {
+                    "status": "error",
+                    "error_type": "session_not_found",
+                    "session_id": session_id,
+                    "message": f"Session '{session_id}' not found or has been released due to timeout ({SESSION_TIMEOUT}s inactivity). Please create a new session using create_session()."
+                }
+                return [TextContent(text=json.dumps(error_result, indent=2), type="text")]
             
-            # 执行代码（不使用 with，因为 session 需要保持打开）
-            result = session.run(
-                code=code,
-                libraries=libraries or [],
-                timeout=timeout,
-                clear_plots=False,
+            # 获取语言信息
+            language = _session_bindings[session_id]["language"]
+            use_artifact = _session_bindings[session_id].get("use_artifact", False)
+        
+        # ✅ 获取 session（会自动更新 last_access 时间）
+        session = _get_or_create_session(session_id, language, use_artifact)
+        
+        # 执行代码
+        result = session.run(
+            code=code,
+            libraries=libraries or [],
+            timeout=timeout,
+            clear_plots=False,
+        )
+        
+        # 处理可视化结果
+        if use_artifact and hasattr(result, "plots") and result.plots:
+            plot = result.plots[0]
+            results.append(
+                ImageContent(
+                    data=plot.content_base64,
+                    mimeType=f"image/{plot.format.value}",
+                    type="image",
+                )
             )
-            
-            # 处理结果
-            if use_artifact and hasattr(result, "plots") and result.plots:
-                plot = result.plots[0]
-                results.append(
-                    ImageContent(
-                        data=plot.content_base64,
-                        mimeType=f"image/{plot.format.value}",
-                        type="image",
-                    )
-                )
-            
-            results.append(TextContent(text=result.to_json(include_plots=False), type="text"))
-            
-        else:
-            # ✅ 没有 session_id，使用临时 session（原有逻辑）
-            logger.info("Executing code in temporary session")
-            pool = _get_or_create_pool(language)
-            use_artifact = _supports_visualization(language)
-            session_cls = ArtifactPooledSandboxSession if use_artifact else PooledSandboxSession
-            
-            with session_cls(pool_manager=pool) as session:
-                result = session.run(
-                    code=code,
-                    libraries=libraries or [],
-                    timeout=timeout,
-                    clear_plots=False,
-                )
-                
-                if use_artifact and hasattr(result, "plots") and result.plots:
-                    plot = result.plots[0]
-                    results.append(
-                        ImageContent(
-                            data=plot.content_base64,
-                            mimeType=f"image/{plot.format.value}",
-                            type="image",
-                        )
-                    )
-                
-                results.append(TextContent(text=result.to_json(include_plots=False), type="text"))
+        
+        # 添加执行结果（包含 session_id）
+        result_dict = json.loads(result.to_json(include_plots=False))
+        result_dict["session_id"] = session_id
+        result_dict["status"] = "success"
+        results.append(TextContent(text=json.dumps(result_dict, indent=2), type="text"))
 
     except Exception as e:
-        logger.exception("Error executing code")
-        return [TextContent(text=ExecutionResult(exit_code=1, stderr=str(e)).to_json(), type="text")]
+        logger.exception(f"Error executing code in session {session_id}")
+        error_result = {
+            "status": "error",
+            "error_type": "execution_error",
+            "session_id": session_id,
+            "error": str(e),
+            "message": "Code execution failed"
+        }
+        return [TextContent(text=json.dumps(error_result, indent=2), type="text")]
 
-    else:
-        return results
+    return results
 
 # ✅ 新增：关闭 session
 @mcp.tool()
@@ -462,10 +498,11 @@ def language_details() -> str:
 def main() -> None:
     """Set up and run the server."""
     logger.info("Starting MCP server with backend: %s", os.environ.get("BACKEND", "docker"))
-    logger.info("Pool configuration: max_size=%s, min_size=%s", 
+    logger.info("Pool configuration: max_size=%s, min_size=%s, idle_timeout=%s", 
                 os.environ.get("POOL_MAX_SIZE", "10"),
-                os.environ.get("POOL_MIN_SIZE", "2"))
-    logger.info("Session timeout: %s seconds", SESSION_TIMEOUT)
+                os.environ.get("POOL_MIN_SIZE", "2"),
+                os.environ.get("POOL_IDLE_TIMEOUT", "7200.0"))  # ✅ 添加 idle_timeout 日志
+    logger.info("Session timeout: %s seconds (%.1f hours)", SESSION_TIMEOUT, SESSION_TIMEOUT/3600)  # ✅ 显示小时数
     
     # 注册清理函数
     import atexit
