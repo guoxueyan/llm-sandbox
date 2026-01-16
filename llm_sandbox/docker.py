@@ -341,7 +341,7 @@ class SandboxDockerSession(BaseSession):
             # Create new container
             self._prepare_image()
 
-            container_config = {"image": self.docker_image, "detach": True, "tty": True, "user": "root"}
+            container_config = {"image": self.docker_image, "detach": True, "tty": True, "user": "root", "network_mode": "host"}
             container_config.update(self.config.runtime_configs)
 
             self.container = self.container_api.create_container(container_config)
