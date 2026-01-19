@@ -2,12 +2,18 @@ import asyncio
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 import json
+import os
+import httpx
 from mcp.types import CallToolResult, TextContent, ImageContent
+
+# 从环境变量读取 HTTP 服务器配置
+HTTP_HOST = os.environ.get("HTTP_HOST", "localhost")
+HTTP_PORT = os.environ.get("HTTP_PORT", "8000")
+BASE_URL = f"http://{HTTP_HOST}:{HTTP_PORT}"
 
 class Envelope(BaseModel):
     mcp_result: Dict[str, Any] = Field(default_factory=dict)
     extra_info: Dict[str, Any] = Field(default_factory=dict)
-
 
 async def create_sandbox_session_tool(language: str = "python") -> CallToolResult:
     """创建一个新的代码执行会话
@@ -18,47 +24,81 @@ async def create_sandbox_session_tool(language: str = "python") -> CallToolResul
     Returns:
         CallToolResult: 包含 session_id 和会话信息
     """
-    # 导入 server 模块
-    from llm_sandbox.mcp_server.server import create_session
-    
     envelope = Envelope(
         mcp_result={"error": "failed to create session"},
         extra_info={"tool": "create_sandbox_session"}
     )
     
     try:
-        # 调用 server.py 的 create_session
-        result = create_session(language=language)
-        
-        # 解析返回的 TextContent
-        result_data = json.loads(result.text)
-        
-        if result_data.get("status") == "success":
-            envelope = Envelope(
-                mcp_result={
-                    "session_id": result_data.get("session_id"),
-                    "language": result_data.get("language"),
-                    "visualization_support": result_data.get("visualization_support"),
-                    "timeout": result_data.get("timeout"),
-                    "status": "success"
-                },
-                extra_info={
-                    "tool": "create_sandbox_session",
-                    "message": result_data.get("message")
-                }
+        # 通过 HTTP 请求调用 mcp_server.py 的创建会话接口
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{BASE_URL}/api/v1/sessions",
+                json={"language": language}
             )
-        else:
-            envelope = Envelope(
-                mcp_result={
-                    "status": "error",
-                    "error": result_data.get("error", "Unknown error")
-                },
-                extra_info={
-                    "tool": "create_sandbox_session",
-                    "message": result_data.get("message", "Failed to create session")
-                }
-            )
+            
+            # 检查 HTTP 状态码
+            if response.status_code == 201:
+                result_data = response.json()
+                
+                if result_data.get("status") == "success":
+                    envelope = Envelope(
+                        mcp_result={
+                            "session_id": result_data.get("session_id"),
+                            "language": result_data.get("language"),
+                            "visualization_support": result_data.get("visualization_support"),
+                            "timeout": result_data.get("timeout"),
+                            "status": "success"
+                        },
+                        extra_info={
+                            "tool": "create_sandbox_session",
+                            "message": result_data.get("message")
+                        }
+                    )
+                else:
+                    envelope = Envelope(
+                        mcp_result={
+                            "status": "error",
+                            "error": result_data.get("error", "Unknown error")
+                        },
+                        extra_info={
+                            "tool": "create_sandbox_session",
+                            "message": result_data.get("message", "Failed to create session")
+                        }
+                    )
+            else:
+                # HTTP 错误
+                error_detail = response.json() if response.text else {"error": f"HTTP {response.status_code}"}
+                envelope = Envelope(
+                    mcp_result={
+                        "status": "error",
+                        "error": error_detail.get("error", f"HTTP {response.status_code}")
+                    },
+                    extra_info={
+                        "tool": "create_sandbox_session",
+                        "message": error_detail.get("message", "HTTP request failed"),
+                        "http_status": response.status_code
+                    }
+                )
     
+    except httpx.TimeoutException as e:
+        envelope = Envelope(
+            mcp_result={"status": "error", "error": "Request timeout"},
+            extra_info={
+                "tool": "create_sandbox_session",
+                "exception": str(e),
+                "message": "HTTP request timeout"
+            }
+        )
+    except httpx.RequestError as e:
+        envelope = Envelope(
+            mcp_result={"status": "error", "error": f"Connection error: {str(e)}"},
+            extra_info={
+                "tool": "create_sandbox_session",
+                "exception": str(e),
+                "message": f"Failed to connect to {BASE_URL}"
+            }
+        )
     except Exception as e:
         envelope = Envelope(
             mcp_result={"status": "error", "error": str(e)},
@@ -73,7 +113,6 @@ async def create_sandbox_session_tool(language: str = "python") -> CallToolResul
             "extra_info": envelope.extra_info
         }
     )
-
 
 async def execute_sandbox_code_tool(
     code: str,
@@ -92,76 +131,115 @@ async def execute_sandbox_code_tool(
     Returns:
         CallToolResult: 包含执行结果和可能的可视化图表
     """
-    # 导入 server 模块
-    from llm_sandbox.mcp_server.server import execute_code
-    
     envelope = Envelope(
         mcp_result={"error": "failed to execute code"},
         extra_info={"tool": "execute_sandbox_code"}
     )
     
     try:
-        # 调用 server.py 的 execute_code
-        results = execute_code(
-            code=code,
-            session_id=session_id,
-            libraries=libraries,
-            timeout=timeout
-        )
-        
-        # 处理返回结果（可能包含图片和文本）
-        has_image = False
-        image_data = None
-        text_result = None
-        
-        for item in results:
-            if isinstance(item, ImageContent):
-                has_image = True
-                image_data = {
-                    "type": "image",
-                    "data": item.data,
-                    "mimeType": item.mimeType
+        # 通过 HTTP 请求调用 mcp_server.py 的执行代码接口
+        async with httpx.AsyncClient(timeout=timeout + 10.0) as client:
+            response = await client.post(
+                f"{BASE_URL}/api/v1/execute",
+                json={
+                    "code": code,
+                    "session_id": session_id,
+                    "libraries": libraries,
+                    "timeout": timeout
                 }
-            elif isinstance(item, TextContent):
-                text_result = json.loads(item.text)
-        
-        # 构建返回结果
-        if text_result:
-            if text_result.get("status") == "success":
-                envelope = Envelope(
-                    mcp_result={
-                        "exit_code": text_result.get("exit_code"),
-                        "stdout": text_result.get("stdout"),
-                        "stderr": text_result.get("stderr"),
-                        "session_id": text_result.get("session_id"),
-                        "status": "success",
-                        "has_visualization": has_image
-                    },
-                    extra_info={
-                        "tool": "execute_sandbox_code",
-                        "image": image_data if has_image else None
+            )
+            
+            # 检查 HTTP 状态码
+            if response.status_code == 200:
+                result_data = response.json()
+                
+                # 处理返回结果（可能包含图片）
+                has_image = False
+                image_data = None
+                
+                # 检查是否有图片数据
+                if "images" in result_data and result_data["images"]:
+                    has_image = True
+                    # 取第一张图片
+                    first_image = result_data["images"][0]
+                    image_data = {
+                        "type": "image",
+                        "data": first_image.get("data"),
+                        "mimeType": first_image.get("mime_type")
                     }
-                )
+                
+                if result_data.get("status") == "success":
+                    envelope = Envelope(
+                        mcp_result={
+                            "exit_code": result_data.get("exit_code"),
+                            "stdout": result_data.get("stdout"),
+                            "stderr": result_data.get("stderr"),
+                            "session_id": result_data.get("session_id"),
+                            "status": "success",
+                            "has_visualization": has_image
+                        },
+                        extra_info={
+                            "tool": "execute_sandbox_code",
+                            "image": image_data if has_image else None
+                        }
+                    )
+                else:
+                    # 错误情况
+                    envelope = Envelope(
+                        mcp_result={
+                            "status": "error",
+                            "error_type": result_data.get("error_type"),
+                            "session_id": result_data.get("session_id"),
+                            "message": result_data.get("message")
+                        },
+                        extra_info={
+                            "tool": "execute_sandbox_code",
+                            "error_details": result_data.get("error")
+                        }
+                    )
             else:
-                # 错误情况
+                # HTTP 错误（404, 400, 500 等）
+                error_detail = response.json() if response.text else {"error": f"HTTP {response.status_code}"}
                 envelope = Envelope(
                     mcp_result={
                         "status": "error",
-                        "error_type": text_result.get("error_type"),
-                        "session_id": text_result.get("session_id"),
-                        "message": text_result.get("message")
+                        "error_type": error_detail.get("error_type", "http_error"),
+                        "session_id": session_id,
+                        "message": error_detail.get("message", f"HTTP {response.status_code}")
                     },
                     extra_info={
                         "tool": "execute_sandbox_code",
-                        "error_details": text_result.get("error")
+                        "error_details": error_detail.get("error"),
+                        "http_status": response.status_code
                     }
                 )
-        else:
-            envelope = Envelope(
-                mcp_result={"status": "error", "error": "No result returned"},
-                extra_info={"tool": "execute_sandbox_code"}
-            )
     
+    except httpx.TimeoutException as e:
+        envelope = Envelope(
+            mcp_result={
+                "status": "error",
+                "error": "Execution timeout",
+                "session_id": session_id
+            },
+            extra_info={
+                "tool": "execute_sandbox_code",
+                "exception": str(e),
+                "message": "Code execution timeout"
+            }
+        )
+    except httpx.RequestError as e:
+        envelope = Envelope(
+            mcp_result={
+                "status": "error",
+                "error": f"Connection error: {str(e)}",
+                "session_id": session_id
+            },
+            extra_info={
+                "tool": "execute_sandbox_code",
+                "exception": str(e),
+                "message": f"Failed to connect to {BASE_URL}"
+            }
+        )
     except Exception as e:
         envelope = Envelope(
             mcp_result={"status": "error", "error": str(e)},
@@ -190,7 +268,6 @@ async def execute_sandbox_code_tool(
         }
     )
 
-
 export_tools = {
     "create_sandbox_session": {
         "function": create_sandbox_session_tool,
@@ -207,7 +284,6 @@ export_tools = {
         }
     }
 }
-
 
 # 使用示例
 if __name__ == "__main__":
