@@ -63,17 +63,18 @@ class DockerContainerAPI:
                     # API 版本 >= 1.35，直接使用 workdir 参数
                     exec_kwargs["workdir"] = workdir
                 else:
-                    # API 版本 < 1.35，使用 cd 命令切换目录
+                    # ✅ 修复：API 版本 < 1.35，统一使用 shell 执行 cd 命令
                     if isinstance(command, str):
-                        command = f"cd {workdir} && {command}"
+                        # 字符串命令：通过 sh -c 执行
+                        command = ["sh", "-c", f"cd {workdir} && {command}"]
                     else:
-                        # 如果是列表形式的命令，转换为 shell 执行
+                        # 列表命令：转换为 shell 执行
                         command = ["sh", "-c", f"cd {workdir} && {' '.join(command)}"]
                     exec_kwargs["cmd"] = command
             except Exception:
-                # 如果无法获取 API 版本，默认使用 cd 方式（更安全）
+                # 如果无法获取 API 版本，默认使用 sh -c 方式（更安全）
                 if isinstance(command, str):
-                    command = f"cd {workdir} && {command}"
+                    command = ["sh", "-c", f"cd {workdir} && {command}"]
                 else:
                     command = ["sh", "-c", f"cd {workdir} && {' '.join(command)}"]
                 exec_kwargs["cmd"] = command
