@@ -230,7 +230,8 @@ class PooledSandboxSession:
                     execution_timeout=self._execution_timeout,
                     session_timeout=self._session_timeout,
                     container_id=container_id,  # Connect to existing pooled container
-                    skip_environment_setup=True,  # Pool already set up the environment
+                    # skip_environment_setup=True,  # Pool already set up the environment
+                    skip_environment_setup=False,  # Pool already set up the environment
                     **session_kwargs,
                 )
 

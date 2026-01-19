@@ -7,7 +7,7 @@ import httpx
 from mcp.types import CallToolResult, TextContent, ImageContent
 
 # 从环境变量读取 HTTP 服务器配置
-HTTP_HOST = os.environ.get("HTTP_HOST", "localhost")
+HTTP_HOST = os.environ.get("HTTP_HOST", "11.180.61.6")
 HTTP_PORT = os.environ.get("HTTP_PORT", "8000")
 BASE_URL = f"http://{HTTP_HOST}:{HTTP_PORT}"
 
@@ -309,25 +309,194 @@ if __name__ == "__main__":
         
         # 示例3: 执行带可视化的代码
         print("=== 执行可视化代码 ===")
+#         viz_code = """
+# import matplotlib.pyplot as plt
+# import numpy as np
+
+# x = np.linspace(0, 10, 100)
+# y = np.sin(x)
+
+# plt.figure(figsize=(10, 6))
+# plt.plot(x, y)
+# plt.title('Sine Wave')
+# plt.xlabel('x')
+# plt.ylabel('sin(x)')
+# plt.grid(True)
+# plt.show()
+
+# print('Plot generated!')
+# """
         viz_code = """
-import matplotlib.pyplot as plt
-import numpy as np
+from typing import Dict, Any, List, Optional
+from pydantic import BaseModel, Field
+from mcp.types import CallToolResult, TextContent
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
+import json
+import aiohttp
+import time
+import random
+import sys
+from env_config_manager import get_config_value
+from log import logger
 
-x = np.linspace(0, 10, 100)
-y = np.sin(x)
 
-plt.figure(figsize=(10, 6))
-plt.plot(x, y)
-plt.title('Sine Wave')
-plt.xlabel('x')
-plt.ylabel('sin(x)')
-plt.grid(True)
-plt.show()
+class Envelope(BaseModel):
+    mcp_result: Dict[str, Any] = Field(default_factory=dict)
+    extra_info: Dict[str, Any] = Field(default_factory=dict)
 
-print('Plot generated!')
+
+async def request_completions_api_async(image: str, session: aiohttp.ClientSession, prompt: str = "no prompt", model_name: str = 'clinical-vlm-paddle-ocr-vl'):
+    
+    # API配置
+    url = get_config_value('ocr_url')
+    headers = {
+        'Content-Type': 'application/json'
+    }
+
+    # 生成request_id
+    request_id = "".join([chr(random.randint(0, 65536) % 26 + ord('a')) for _ in range(20)])
+
+    # 构造multi_modal_data
+    multi_modal_data = []
+    if image:
+        multi_modal_data.append({
+            "mime_type": "image/url",
+            "content": image
+        })
+
+    # 构造请求body
+    body = {
+        "request_id": request_id,
+        "prompts": ["no prompt"],
+        "multi_modal_data": multi_modal_data
+    }
+
+
+    # 发送异步请求
+    try:
+        async with session.post(
+            url, 
+            json=body, 
+            headers=headers, 
+            timeout=aiohttp.ClientTimeout(total=30)
+        ) as response:
+            if response.status == 200:
+                text_data = await response.text()
+                data = json.loads(text_data)
+                return data
+                
+            else:
+                error_text = await response.text()
+                print(f"OCR 请求失败: {error_text[:500]}", file=sys.stderr)
+                return ""
+                
+    except asyncio.TimeoutError:
+        error_msg = f"OCR API 请求超时: {image}"
+        print(error_msg, file=sys.stderr)
+        return {
+            'error_code': -1,
+            'error_msg': 'timeout',
+            'image': image
+        }
+    except Exception as e:
+        error_msg = f"OCR API 请求异常: {type(e).__name__}: {str(e)}"
+        print(error_msg, file=sys.stderr)
+        return {
+            'error_code': -1,
+            'error_msg': str(e),
+            'image': image
+        }
+
+async def ocr_tool(images: List[str]):
+    envelope = Envelope(
+            mcp_result={"error":"parameter error"},
+            extra_info={"tool": "ocr_tool"}
+        )
+    if not images:
+        return []
+    
+    try:
+        # 创建异步HTTP会话
+        async with aiohttp.ClientSession() as session:
+            server_tasks = [
+                request_completions_api_async(image_url, session)
+                for image_url in images
+            ]
+            server_processed_results = []
+            content_list = []
+            # 并发执行所有请求ocr_server任务
+            print(f"ocr_server请求  开始并发处理 {len(images)} 张图片...")
+            server_results = await asyncio.gather(*server_tasks, return_exceptions=True)
+            info_list = []
+            message_list = []
+            status_data = {
+                "status": "success"
+            }
+            # 处理结果和异常
+            for i, result in enumerate(server_results):
+                if isinstance(result, Exception) or result['message'] != "success":
+                    print(f"图片 {images[i]} 处理异常: {result}", file=sys.stderr)
+                    message_list.append(
+                        {
+                            "error_msg": 'OCR 处理失败',
+                        }
+                    )
+                    status_data['status'] = 'failed'
+                else:
+                    # info_list.append(
+                    #     {
+                    #         "data": result,
+                    #         'image': images[i]
+                    #     }
+                    # )
+                    if result.get('data', {}).get('choices', [])[0].get('message', {}).get('meta_data', {}).get('markdown_texts', ''):
+                        message_list.append(
+                            {
+                                "markdown_text": result['data']['choices'][0]['message']['meta_data']['markdown_texts']
+                            }
+                        )
+            content_text = json.dumps(message_list, default=str, ensure_ascii=False)
+
+            envelope = Envelope(
+                mcp_result={"ocr_result": message_list}
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text=content_text)],     # 给模型看的
+                structuredContent= envelope.mcp_result,                    # 给模型/程序看的结构化结果
+                _meta={                                                    # 只给客户端/中间层看的
+                    "extra_info": status_data
+                }
+            )
+        
+    except Exception as e:
+        error_msg = f"ocr_tool 请求异常: {type(e).__name__}: {str(e)}"
+        return CallToolResult(
+                content=[TextContent(type="text", text=error_msg)],     # 给模型看的
+                isError=True
+            )
+
+
+export_tools = {
+    "ocr_tool": {
+        "function": ocr_tool,
+        "meta": {
+            "description": "ocr图片分析工具",
+            "tag": "medical"
+        }
+    }
+}
+
+if __name__ == '__main__':
+    asyncio.run(ocr_tool(
+            [
+                "https://quarkmed-vlm.oss-cn-hangzhou.aliyuncs.com/business/mm-query-image-tool-nothink-checksheet-sythesis/56ac008b-c15b-4272-b833-c6845dfb2208/f57c1aea-1c0b-4973-9d3c-a0c80967bd6a.jpg?OSSAccessKeyId=LTAI5tAyZg5kEtQkcDJpBPNK&Expires=1796184638&Signature=ygPvIT5hTYf%2B2S23xSmsxDohiIs%3D",
+                "https://b0.bdstatic.com/ugc/tPIfkmAJS7mekPy_5t-uyg8e2ba4e3b761f43e43a7e116a7f51450.jpg@h_1280"
+            ]))
 """
         viz_result = asyncio.run(execute_sandbox_code_tool(
             code=viz_code,
-            session_id=session_id
+            session_id=session_id,
+            libraries=["mcp-server-fastmcp", "aiohttp"]
         ))
         print(viz_result)
