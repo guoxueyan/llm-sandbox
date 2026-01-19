@@ -49,8 +49,34 @@ class DockerContainerAPI:
             "stdout": True,
             "demux": True,
         }
+        
+        # ✅ 兼容低版本 Docker API（< 1.35）
+        # workdir 参数在 API 1.35+ 才支持，对于低版本使用 cd 命令
         if workdir:
-            exec_kwargs["workdir"] = workdir
+            try:
+                # 获取 Docker API 版本
+                api_version = self.client.api.api_version
+                # 将版本号转换为浮点数进行比较（如 "1.24" -> 1.24）
+                version_float = float(api_version)
+                
+                if version_float >= 1.35:
+                    # API 版本 >= 1.35，直接使用 workdir 参数
+                    exec_kwargs["workdir"] = workdir
+                else:
+                    # API 版本 < 1.35，使用 cd 命令切换目录
+                    if isinstance(command, str):
+                        command = f"cd {workdir} && {command}"
+                    else:
+                        # 如果是列表形式的命令，转换为 shell 执行
+                        command = ["sh", "-c", f"cd {workdir} && {' '.join(command)}"]
+                    exec_kwargs["cmd"] = command
+            except Exception:
+                # 如果无法获取 API 版本，默认使用 cd 方式（更安全）
+                if isinstance(command, str):
+                    command = f"cd {workdir} && {command}"
+                else:
+                    command = ["sh", "-c", f"cd {workdir} && {' '.join(command)}"]
+                exec_kwargs["cmd"] = command
 
         result = container.exec_run(**exec_kwargs)
         return result.exit_code or 0, result.output
