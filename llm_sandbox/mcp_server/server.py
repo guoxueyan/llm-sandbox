@@ -500,7 +500,7 @@ def main() -> None:
     logger.info("Starting MCP server with backend: %s", os.environ.get("BACKEND", "docker"))
     logger.info("Pool configuration: max_size=%s, min_size=%s, idle_timeout=%s", 
                 os.environ.get("POOL_MAX_SIZE", "10"),
-                os.environ.get("POOL_MIN_SIZE", "2"),
+                os.environ.get("POOL_MIN_SIZE", "0"),
                 os.environ.get("POOL_IDLE_TIMEOUT", "7200.0"))  # ✅ 添加 idle_timeout 日志
     logger.info("Session timeout: %s seconds (%.1f hours)", SESSION_TIMEOUT, SESSION_TIMEOUT/3600)  # ✅ 显示小时数
     

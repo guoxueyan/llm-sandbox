@@ -20,7 +20,7 @@ async def test_mcp_session():
         env={
             "BACKEND": "docker",
             "POOL_MAX_SIZE": "5",
-            "POOL_MIN_SIZE": "0",
+            "POOL_MIN_SIZE": "1",
             "SESSION_TIMEOUT": "1800",
             "PREINSTALL_LIBS_PYTHON": "numpy,pandas,pydantic",
         }
