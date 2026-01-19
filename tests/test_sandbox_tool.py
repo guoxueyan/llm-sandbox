@@ -31,7 +31,7 @@ async def create_sandbox_session_tool(language: str = "python") -> CallToolResul
     
     try:
         # 通过 HTTP 请求调用 mcp_server.py 的创建会话接口
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=600.0) as client:
             response = await client.post(
                 f"{BASE_URL}/api/v1/sessions",
                 json={"language": language}
@@ -118,7 +118,7 @@ async def execute_sandbox_code_tool(
     code: str,
     session_id: str,
     libraries: Optional[List[str]] = None,
-    timeout: int = 30
+    timeout: int = 600
 ) -> CallToolResult:
     """在指定会话中执行代码
     
