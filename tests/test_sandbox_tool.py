@@ -15,11 +15,12 @@ class Envelope(BaseModel):
     mcp_result: Dict[str, Any] = Field(default_factory=dict)
     extra_info: Dict[str, Any] = Field(default_factory=dict)
 
-async def create_sandbox_session_tool(language: str = "python") -> CallToolResult:
+async def create_sandbox_session_tool(language: str = "python", libraries: Optional[List[str]] = None) -> CallToolResult:  # ✅ 新增 libraries 参数
     """创建一个新的代码执行会话
     
     Args:
         language: 编程语言，默认 python
+        libraries: 需要预安装的库列表（可选）
         
     Returns:
         CallToolResult: 包含 session_id 和会话信息
@@ -34,7 +35,7 @@ async def create_sandbox_session_tool(language: str = "python") -> CallToolResul
         async with httpx.AsyncClient(timeout=600.0) as client:
             response = await client.post(
                 f"{BASE_URL}/api/v1/sessions",
-                json={"language": language}
+                json={"language": language, "libraries": libraries}  # ✅ 添加 libraries 参数
             )
             
             # 检查 HTTP 状态码
@@ -337,9 +338,6 @@ import aiohttp
 import time
 import random
 import sys
-from env_config_manager import get_config_value
-from log import logger
-
 
 class Envelope(BaseModel):
     mcp_result: Dict[str, Any] = Field(default_factory=dict)
@@ -349,7 +347,7 @@ class Envelope(BaseModel):
 async def request_completions_api_async(image: str, session: aiohttp.ClientSession, prompt: str = "no prompt", model_name: str = 'clinical-vlm-paddle-ocr-vl'):
     
     # API配置
-    url = get_config_value('ocr_url')
+    url = "http://mcp-ocr-server.zeus.vipserver:51136/"
     headers = {
         'Content-Type': 'application/json'
     }
@@ -491,12 +489,13 @@ if __name__ == '__main__':
     asyncio.run(ocr_tool(
             [
                 "https://quarkmed-vlm.oss-cn-hangzhou.aliyuncs.com/business/mm-query-image-tool-nothink-checksheet-sythesis/56ac008b-c15b-4272-b833-c6845dfb2208/f57c1aea-1c0b-4973-9d3c-a0c80967bd6a.jpg?OSSAccessKeyId=LTAI5tAyZg5kEtQkcDJpBPNK&Expires=1796184638&Signature=ygPvIT5hTYf%2B2S23xSmsxDohiIs%3D",
-                "https://b0.bdstatic.com/ugc/tPIfkmAJS7mekPy_5t-uyg8e2ba4e3b761f43e43a7e116a7f51450.jpg@h_1280"
+                # "https://b0.bdstatic.com/ugc/tPIfkmAJS7mekPy_5t-uyg8e2ba4e3b761f43e43a7e116a7f51450.jpg@h_1280"
             ]))
+            
 """
         viz_result = asyncio.run(execute_sandbox_code_tool(
             code=viz_code,
             session_id=session_id,
-            libraries=["mcp-server-fastmcp", "aiohttp"]
+            libraries=["mcp", "aiohttp"]
         ))
         print(viz_result)

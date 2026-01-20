@@ -40,6 +40,7 @@ app = FastAPI(
 class CreateSessionRequest(BaseModel):
     """Request model for creating a new session."""
     language: str = Field(default="python", description="Programming language for the session")
+    libraries: Optional[List[str]] = Field(default=None, description="List of libraries to pre-install")  # ✅ 新增字段
 
 
 class CreateSessionResponse(BaseModel):
@@ -95,7 +96,7 @@ async def create_session(request: CreateSessionRequest):
     """Create a new session endpoint.
     
     Args:
-        request: CreateSessionRequest containing language preference
+        request: CreateSessionRequest containing language preference and optional libraries
         
     Returns:
         CreateSessionResponse with session details
@@ -104,10 +105,10 @@ async def create_session(request: CreateSessionRequest):
         HTTPException: If session creation fails
     """
     try:
-        logger.info(f"Creating session for language: {request.language}")
+        logger.info(f"Creating session for language: {request.language}, libraries: {request.libraries}")
         
         # 调用 MCP server 的 create_session 函数
-        result = mcp_create_session(language=request.language)
+        result = mcp_create_session(language=request.language, libraries=request.libraries)  # ✅ 传递 libraries 参数
         
         # 解析返回的 TextContent
         result_data = json.loads(result.text)

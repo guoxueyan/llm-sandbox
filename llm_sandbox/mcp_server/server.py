@@ -207,11 +207,12 @@ def _supports_visualization(language: str) -> bool:
 
 # ✅ 新增：创建 session
 @mcp.tool()
-def create_session(language: str = "python") -> TextContent:
+def create_session(language: str = "python", libraries: list[str] | None = None) -> TextContent:
     """Create a new debugging session with a dedicated container.
     
     Args:
         language: Programming language for the session (default: python)
+        libraries: List of libraries/packages to pre-install in the session (optional)
         
     Returns:
         TextContent: JSON containing session_id and session info
@@ -222,6 +223,7 @@ def create_session(language: str = "python") -> TextContent:
             "session_id": "uuid-string",
             "language": "python",
             "visualization_support": true,
+            "libraries": ["numpy", "pandas"],
             "message": "Session created successfully"
         }
     """
@@ -234,6 +236,21 @@ def create_session(language: str = "python") -> TextContent:
         
         # 创建 session（会自动从池中获取或创建容器）
         session = _get_or_create_session(session_id, language, use_artifact)
+        
+        # ✅ 如果用户指定了 libraries，则安装这些库
+        if libraries:
+            logger.info(f"Installing user-specified libraries for session {session_id}: {libraries}")
+            try:
+                # 在 session 中安装指定的库
+                install_result = session.run(
+                    code=f"# Installing libraries: {', '.join(libraries)}",
+                    libraries=libraries,
+                    timeout=300,  # 安装库可能需要较长时间
+                )
+                logger.info(f"Libraries installed successfully in session {session_id}")
+            except Exception as e:
+                logger.error(f"Failed to install libraries in session {session_id}: {e}")
+                # 可以选择继续或返回错误
         
         result = {
             "status": "success",
