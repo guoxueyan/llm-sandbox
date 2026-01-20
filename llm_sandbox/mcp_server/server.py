@@ -55,7 +55,7 @@ def _get_pool_config() -> PoolConfig:
     """Get pool configuration from environment variables."""
     return PoolConfig(
         # 基础配置
-        max_pool_size=int(os.environ.get("POOL_MAX_SIZE", "10")),
+        max_pool_size=int(os.environ.get("POOL_MAX_SIZE", "100")),
         min_pool_size=int(os.environ.get("POOL_MIN_SIZE", "0")),
         
         # 超时配置
