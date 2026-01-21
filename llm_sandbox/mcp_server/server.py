@@ -422,8 +422,38 @@ def execute_code(
                 )
             )
         
+        full_stdout = result.stdout
+        system_output = full_stdout
+        user_content = ""
+        system_markers = [
+            "Python plot detection setup complete",
+            "Installing packages:",
+            "Package installation complete",
+        ]
+        lines = full_stdout.split('\n')
+        system_lines = []
+        content_lines = []
+        is_system_output = True
+        for line in lines:
+            # 如果是系统标记行，归类为系统输出
+            if any(marker in line for marker in system_markers):
+                system_lines.append(line)
+            else:
+                # 一旦遇到非系统输出，后续都视为用户内容
+                if line.strip():  # 忽略空行
+                    is_system_output = False
+                
+                if is_system_output:
+                    system_lines.append(line)
+                else:
+                    content_lines.append(line)
+        system_output = '\n'.join(system_lines)
+        user_content = '\n'.join(content_lines)
+
         # 添加执行结果（包含 session_id）
         result_dict = json.loads(result.to_json(include_plots=False))
+        result_dict["stdout"] = system_output
+        result_dict["content"] = user_content
         result_dict["session_id"] = session_id
         result_dict["status"] = "success"
         results.append(TextContent(text=json.dumps(result_dict, indent=2), type="text"))
