@@ -620,19 +620,7 @@ def main() -> None:
                 os.environ.get("POOL_MIN_SIZE", "0"),
                 os.environ.get("POOL_IDLE_TIMEOUT", "7200.0"))  # ✅ 添加 idle_timeout 日志
     logger.info("Session timeout: %s seconds (%.1f hours)", SESSION_TIMEOUT, SESSION_TIMEOUT/3600)  # ✅ 显示小时数
-    preload_languages = os.environ.get("PRELOAD_LANGUAGES", "python").split(",")
-    logger.info(f"Pre-loading container pools for languages: {preload_languages}")
-
-    for lang in preload_languages:
-        lang = lang.strip()
-        if lang:
-            try:
-                logger.info(f"Initializing pool for {lang}...")
-                pool = _get_or_create_pool(lang)
-                logger.info(f"Pool for {lang} initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize pool for {lang}: {e}")
-                
+    
     # 注册清理函数
     import atexit
     def cleanup():

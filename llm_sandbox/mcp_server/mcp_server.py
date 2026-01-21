@@ -59,7 +59,7 @@ class ExecuteCodeRequest(BaseModel):
     session_id: str = Field(..., description="Session ID (required)")
     libraries: Optional[List[str]] = Field(default=None, description="Libraries to install")
     timeout: int = Field(default=30, description="Execution timeout in seconds")
-    auto_install: bool = Field(default=True, description="Auto-detect and install dependencies") 
+
 
 class ExecuteCodeResponse(BaseModel):
     """Response model for code execution."""
@@ -81,6 +81,45 @@ class ErrorResponse(BaseModel):
     status: str = "error"
     error: str
     message: str
+
+
+# ==================== Server Startup ====================
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize container pools on server startup."""
+    logger.info("Initializing container pools on startup...")
+    
+    # 从环境变量读取需要预热的语言列表
+    prewarm_languages = os.environ.get("PREWARM_LANGUAGES", "python").split(",")
+    prewarm_languages = [lang.strip() for lang in prewarm_languages]
+    
+    logger.info(f"Pre-warming container pools for languages: {prewarm_languages}")
+    
+    # 为每个语言创建容器池（这会触发预热）
+    for language in prewarm_languages:
+        try:
+            logger.info(f"Creating container pool for {language}...")
+            # 调用 server.py 中的内部函数来创建池
+            from llm_sandbox.mcp_server.server import _get_or_create_pool
+            _get_or_create_pool(language)
+            logger.info(f"Container pool for {language} created and pre-warming started")
+        except Exception as e:
+            logger.error(f"Failed to create pool for {language}: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up container pools on server shutdown."""
+    logger.info("Shutting down container pools...")
+    
+    from llm_sandbox.mcp_server.server import _pool_managers
+    
+    for lang, pool in _pool_managers.items():
+        try:
+            pool.close()
+            logger.info(f"Closed pool for {lang}")
+        except Exception as e:
+            logger.error(f"Error closing pool for {lang}: {e}")
 
 
 # ==================== HTTP Endpoints ====================
@@ -163,7 +202,6 @@ async def execute_code(request: ExecuteCodeRequest):
             session_id=request.session_id,
             libraries=request.libraries,
             timeout=request.timeout,
-            auto_install=request.auto_install,
         )
         
         # 处理返回结果
