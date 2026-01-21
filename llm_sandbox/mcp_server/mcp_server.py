@@ -8,7 +8,8 @@ import json
 import logging
 from typing import Optional, List
 from contextlib import asynccontextmanager
-
+import asyncio
+import time
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -43,16 +44,45 @@ async def lifespan(app: FastAPI):
     
     logger.info(f"Pre-warming container pools for languages: {prewarm_languages}")
     
-    # 为每个语言创建容器池（这会触发预热）
+    # 为每个语言创建容器池并等待预热完成
     for language in prewarm_languages:
         try:
             logger.info(f"Creating container pool for {language}...")
             # 调用 server.py 中的内部函数来创建池
             from llm_sandbox.mcp_server.server import _get_or_create_pool
-            _get_or_create_pool(language)
-            logger.info(f"Container pool for {language} created and pre-warming started")
+            pool = _get_or_create_pool(language)
+            logger.info(f"Container pool for {language} created, waiting for pre-warming...")
+            
+            # ✅ 等待容器池预热完成
+            min_size = int(os.environ.get("POOL_MIN_SIZE", "3"))
+            max_wait_time = int(os.environ.get("PREWARM_TIMEOUT", "300"))  # 默认最多等待 5 分钟
+            start_time = time.time()
+            
+            while True:
+                stats = pool.get_stats()
+                idle_count = stats["state_counts"].get("idle", 0)
+                total_count = stats["total_size"]
+                
+                logger.info(f"Pre-warming progress for {language}: {idle_count}/{min_size} idle containers ready (total: {total_count})")
+                
+                # 检查是否达到最小池大小
+                if idle_count >= min_size:
+                    logger.info(f"✅ Container pool for {language} pre-warming completed! {idle_count} containers ready.")
+                    break
+                
+                # 检查超时
+                elapsed = time.time() - start_time
+                if elapsed > max_wait_time:
+                    logger.warning(f"⚠️  Pre-warming timeout for {language} after {elapsed:.1f}s. Only {idle_count}/{min_size} containers ready. Continuing anyway...")
+                    break
+                
+                # 等待一段时间后再检查
+                await asyncio.sleep(2)  # 每 2 秒检查一次
+            
         except Exception as e:
             logger.error(f"Failed to create pool for {language}: {e}")
+    
+    logger.info("🚀 All container pools pre-warmed and ready!")
     
     yield  # 服务运行期间
     
