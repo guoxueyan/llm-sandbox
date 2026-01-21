@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
             logger.info(f"Container pool for {language} created, waiting for pre-warming...")
             
             # ✅ 等待容器池预热完成
-            min_size = int(os.environ.get("POOL_MIN_SIZE", "3"))
+            min_size = int(os.environ.get("POOL_MIN_SIZE", "10"))
             max_wait_time = int(os.environ.get("PREWARM_TIMEOUT", "300"))  # 默认最多等待 5 分钟
             start_time = time.time()
             
