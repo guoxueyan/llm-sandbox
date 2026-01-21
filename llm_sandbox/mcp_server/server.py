@@ -11,6 +11,8 @@ import time
 import uuid
 from typing import Dict, Optional
 import threading
+import re
+import ast
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent
@@ -205,6 +207,57 @@ def _supports_visualization(language: str) -> bool:
     lang_details = LANGUAGE_RESOURCES.get(language)
     return lang_details.get("visualization_support", False) if lang_details else False
 
+
+def _extract_imports_from_code(code: str, language: str) -> list[str]:
+    """Extract import statements from code to detect required packages.
+    
+    Args:
+        code: Source code to analyze
+        language: Programming language
+        
+    Returns:
+        List of package names that might need installation
+    """
+    packages = []
+    
+    if language == "python":
+        try:
+            # 使用 AST 解析 Python 代码
+            tree = ast.parse(code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        packages.append(alias.name.split('.')[0])
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module:
+                        packages.append(node.module.split('.')[0])
+        except SyntaxError:
+            # 如果 AST 解析失败，使用正则表达式作为后备
+            import_pattern = r'^\s*(?:import|from)\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+            for match in re.finditer(import_pattern, code, re.MULTILINE):
+                packages.append(match.group(1))
+    
+    elif language == "javascript" or language == "typescript":
+        # 匹配 require() 和 import 语句
+        patterns = [
+            r'require\([\'"]([^\'"]+)[\'"]\)',
+            r'import\s+.*?\s+from\s+[\'"]([^\'"]+)[\'"]',
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, code):
+                packages.append(match.group(1))
+    
+    # 过滤掉标准库（Python 示例）
+    if language == "python":
+        stdlib_modules = {
+            'os', 'sys', 'json', 'time', 'datetime', 're', 'math', 
+            'random', 'collections', 'itertools', 'functools', 'typing',
+            'pathlib', 'io', 'logging', 'unittest', 'threading', 'subprocess'
+        }
+        packages = [pkg for pkg in packages if pkg not in stdlib_modules]
+    
+    return list(set(packages))  # 去重
+
 # ✅ 新增：创建 session
 @mcp.tool()
 def create_session(language: str = "python", libraries: list[str] | None = None) -> TextContent:
@@ -280,6 +333,7 @@ def execute_code(
     session_id: str,  # ✅ 改为必填参数（移除 Optional 和默认值）
     libraries: list[str] | None = None,
     timeout: int = 30,
+    auto_install: bool = True,
 ) -> list[ImageContent | TextContent]:
     """Execute code in a secure sandbox environment with session binding.
 
@@ -288,6 +342,7 @@ def execute_code(
         session_id: Session ID (required). Must be obtained from create_session() first.
         libraries: List of libraries/packages to install
         timeout: Execution timeout in seconds (default: 30)
+        auto_install: Automatically detect and install missing packages (default: True)
 
     Returns:
         List of content items including execution results and visualizations
@@ -330,13 +385,28 @@ def execute_code(
             language = _session_bindings[session_id]["language"]
             use_artifact = _session_bindings[session_id].get("use_artifact", False)
         
+        # ✅ 自动检测依赖
+        detected_packages = []
+        if auto_install:
+            with _session_lock:
+                language = _session_bindings[session_id]["language"]
+            
+            detected_packages = _extract_imports_from_code(code, language)
+            logger.info(f"Detected packages from code: {detected_packages}")
+        
+        # ✅ 合并用户指定的和自动检测的依赖
+        all_libraries = list(set((libraries or []) + detected_packages))
+        
+        if all_libraries:
+            logger.info(f"Installing libraries: {all_libraries}")
+
         # ✅ 获取 session（会自动更新 last_access 时间）
         session = _get_or_create_session(session_id, language, use_artifact)
         
         # 执行代码
         result = session.run(
             code=code,
-            libraries=libraries or [],
+            libraries=all_libraries,
             timeout=timeout,
             clear_plots=False,
         )

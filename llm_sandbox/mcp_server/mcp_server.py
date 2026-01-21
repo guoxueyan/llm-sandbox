@@ -59,7 +59,7 @@ class ExecuteCodeRequest(BaseModel):
     session_id: str = Field(..., description="Session ID (required)")
     libraries: Optional[List[str]] = Field(default=None, description="Libraries to install")
     timeout: int = Field(default=30, description="Execution timeout in seconds")
-
+    auto_install: bool = Field(default=True, description="Auto-detect and install dependencies") 
 
 class ExecuteCodeResponse(BaseModel):
     """Response model for code execution."""
@@ -163,6 +163,7 @@ async def execute_code(request: ExecuteCodeRequest):
             session_id=request.session_id,
             libraries=request.libraries,
             timeout=request.timeout,
+            auto_install=request.auto_install,
         )
         
         # 处理返回结果
