@@ -58,7 +58,7 @@ def _get_pool_config() -> PoolConfig:
     return PoolConfig(
         # 基础配置
         max_pool_size=int(os.environ.get("POOL_MAX_SIZE", "100")),
-        min_pool_size=int(os.environ.get("POOL_MIN_SIZE", "0")),
+        min_pool_size=int(os.environ.get("POOL_MIN_SIZE", "3")),
         
         # 超时配置
         idle_timeout=float(os.environ.get("POOL_IDLE_TIMEOUT", "3600.0")),
