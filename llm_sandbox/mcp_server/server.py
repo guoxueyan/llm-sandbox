@@ -295,8 +295,9 @@ def create_session(language: str = "python", libraries: list[str] | None = None)
             logger.info(f"Installing user-specified libraries for session {session_id}: {libraries}")
             try:
                 # 在 session 中安装指定的库
+                import_statements = "\n".join([f"import {lib}" for lib in libraries])
                 install_result = session.run(
-                    code=f"# Installing libraries: {', '.join(libraries)}",
+                    code=import_statements,
                     libraries=libraries,
                     timeout=300,  # 安装库可能需要较长时间
                 )
@@ -394,8 +395,13 @@ def execute_code(
             detected_packages = _extract_imports_from_code(code, language)
             logger.info(f"Detected packages from code: {detected_packages}")
         
-        # ✅ 合并用户指定的和自动检测的依赖
-        all_libraries = list(set((libraries or []) + detected_packages))
+        pending_libs = []
+        with _session_lock:
+            if session_id in _session_bindings:
+                pending_libs = _session_bindings[session_id].pop("pending_libraries", [])
+
+        # ✅ 合并用户指定的、自动检测的和待安装的依赖
+        all_libraries = list(set((libraries or []) + detected_packages + pending_libs))
         
         if all_libraries:
             logger.info(f"Installing libraries: {all_libraries}")
