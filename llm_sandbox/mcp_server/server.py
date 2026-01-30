@@ -76,8 +76,8 @@ def _get_pool_config() -> PoolConfig:
 def _get_common_libraries(language: str) -> list[str]:
     """Get common libraries to pre-install for a language."""
     common_libs = {
-        "python": ["numpy", "pandas", "matplotlib", "requests", "pydantic"],
-        "javascript": ["lodash", "axios"],
+        # "python": ["numpy", "pandas", "matplotlib", "requests", "pydantic"],
+        # "javascript": ["lodash", "axios"],
     }
     return common_libs.get(language, [])
 
