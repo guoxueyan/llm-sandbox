@@ -261,50 +261,67 @@ def _extract_imports_from_code(code: str, language: str) -> list[str]:
 # ✅ 新增：创建 session
 @mcp.tool()
 def create_session(language: str = "python", libraries: list[str] | None = None) -> TextContent:
-    """Create a new debugging session with a dedicated container.
-    
-    Args:
-        language: Programming language for the session (default: python)
-        libraries: List of libraries/packages to pre-install in the session (optional)
-        
-    Returns:
-        TextContent: JSON containing session_id and session info
-        
-    Example response:
-        {
-            "status": "success",
-            "session_id": "uuid-string",
-            "language": "python",
-            "visualization_support": true,
-            "libraries": ["numpy", "pandas"],
-            "message": "Session created successfully"
-        }
-    """
+    """Create a new debugging session with a dedicated container."""
     try:
-        # 生成唯一的 session_id
         session_id = str(uuid.uuid4())
-        
-        # 判断是否需要可视化支持
         use_artifact = _supports_visualization(language)
         
-        # 创建 session（会自动从池中获取或创建容器）
-        session = _get_or_create_session(session_id, language, use_artifact)
+        logger.info(f"[CREATE_SESSION] Starting session creation: {session_id}, language: {language}, libraries: {libraries}")
         
-        # ✅ 如果用户指定了 libraries，则安装这些库
+        # 创建 session
+        session = _get_or_create_session(session_id, language, use_artifact)
+        logger.info(f"[CREATE_SESSION] Session object created: {session_id}")
+        
+        # ✅ 如果用户指定了 libraries，则安装并验证
         if libraries:
-            logger.info(f"Installing user-specified libraries for session {session_id}: {libraries}")
+            logger.info(f"[CREATE_SESSION] Installing user-specified libraries for session {session_id}: {libraries}")
+            
             try:
-                # 在 session 中安装指定的库
-                import_statements = "\n".join([f"import {lib}" for lib in libraries])
-                install_result = session.run(
-                    code=import_statements,
-                    libraries=libraries,
-                    timeout=300,  # 安装库可能需要较长时间
+                # ✅ 方案1：先安装库（不执行 import）
+                logger.info(f"[CREATE_SESSION] Step 1: Installing libraries via session.install()")
+                session.install(libraries)
+                logger.info(f"[CREATE_SESSION] Step 1 completed: Libraries installation command executed")
+                
+                # ✅ 方案2：验证库是否真正安装成功
+                logger.info(f"[CREATE_SESSION] Step 2: Verifying library installation")
+                verification_code = _generate_verification_code(language, libraries)
+                logger.info(f"[CREATE_SESSION] Verification code:\n{verification_code}")
+                
+                verify_result = session.run(
+                    code=verification_code,
+                    libraries=[],  # 不再安装，只验证
+                    timeout=30,
                 )
-                logger.info(f"Libraries installed successfully in session {session_id}")
+                
+                logger.info(f"[CREATE_SESSION] Verification result - exit_code: {verify_result.exit_code}")
+                logger.info(f"[CREATE_SESSION] Verification stdout:\n{verify_result.stdout}")
+                
+                if verify_result.exit_code != 0:
+                    logger.error(f"[CREATE_SESSION] Library verification failed for session {session_id}")
+                    logger.error(f"[CREATE_SESSION] Verification stderr:\n{verify_result.stderr}")
+                    
+                    # ✅ 尝试重新安装
+                    logger.warning(f"[CREATE_SESSION] Attempting to reinstall libraries: {libraries}")
+                    import_statements = "\n".join([f"import {lib}" for lib in libraries])
+                    reinstall_result = session.run(
+                        code=import_statements,
+                        libraries=libraries,
+                        timeout=300,
+                    )
+                    
+                    logger.info(f"[CREATE_SESSION] Reinstall result - exit_code: {reinstall_result.exit_code}")
+                    logger.info(f"[CREATE_SESSION] Reinstall stdout:\n{reinstall_result.stdout}")
+                    
+                    if reinstall_result.exit_code != 0:
+                        logger.error(f"[CREATE_SESSION] Reinstall also failed!")
+                        logger.error(f"[CREATE_SESSION] Reinstall stderr:\n{reinstall_result.stderr}")
+                else:
+                    logger.info(f"[CREATE_SESSION] ✅ Libraries verified successfully in session {session_id}")
+                    
             except Exception as e:
-                logger.error(f"Failed to install libraries in session {session_id}: {e}")
-                # 可以选择继续或返回错误
+                logger.error(f"[CREATE_SESSION] Failed to install/verify libraries in session {session_id}: {e}", exc_info=True)
+                # 继续创建 session，但记录警告
+                logger.warning(f"[CREATE_SESSION] Session {session_id} created but library installation may have failed")
         
         result = {
             "status": "success",
@@ -315,10 +332,11 @@ def create_session(language: str = "python", libraries: list[str] | None = None)
             "message": f"Session created successfully. Container will be kept alive for {SESSION_TIMEOUT} seconds of inactivity."
         }
         
+        logger.info(f"[CREATE_SESSION] Session creation completed: {session_id}")
         return TextContent(text=json.dumps(result, indent=2), type="text")
         
     except Exception as e:
-        logger.exception("Error creating session")
+        logger.exception(f"[CREATE_SESSION] Error creating session: {e}")
         return TextContent(
             text=json.dumps({
                 "status": "error",
@@ -328,38 +346,44 @@ def create_session(language: str = "python", libraries: list[str] | None = None)
             type="text"
         )
 
+def _generate_verification_code(language: str, libraries: list[str]) -> str:
+    """Generate code to verify library installation.
+    
+    Args:
+        language: Programming language
+        libraries: List of libraries to verify
+        
+    Returns:
+        Verification code string
+    """
+    if language == "python":
+        # 生成验证代码
+        imports = "\n".join([f"import {lib}" for lib in libraries])
+        versions = "\n".join([
+            f"try:\n"
+            f"    print(f'{lib}: {{__import__(\"{lib}\").__version__}}')\n"
+            f"except AttributeError:\n"
+            f"    print(f'{lib}: installed (no __version__)')\n"
+            for lib in libraries
+        ])
+        return f"{imports}\nprint('All libraries imported successfully!')\n{versions}"
+    
+    # 其他语言的验证逻辑
+    return f"# Verification for {language} not implemented"
+
 @mcp.tool()
 def execute_code(
     code: str,
-    session_id: str,  # ✅ 改为必填参数（移除 Optional 和默认值）
+    session_id: str,
     libraries: list[str] | None = None,
     timeout: int = 30,
     auto_install: bool = True,
 ) -> list[ImageContent | TextContent]:
-    """Execute code in a secure sandbox environment with session binding.
-
-    Args:
-        code: The code to execute
-        session_id: Session ID (required). Must be obtained from create_session() first.
-        libraries: List of libraries/packages to install
-        timeout: Execution timeout in seconds (default: 30)
-        auto_install: Automatically detect and install missing packages (default: True)
-
-    Returns:
-        List of content items including execution results and visualizations
-        
-    Error response format:
-        {
-            "status": "error",
-            "error_type": "missing_session_id" | "session_not_found" | "execution_error",
-            "session_id": "provided-session-id" or null,
-            "message": "Error description"
-        }
-    """
+    """Execute code in a secure sandbox environment with session binding."""
     results: list[ImageContent | TextContent] = []
 
     try:
-        # ✅ 检查 session_id 是否为空
+        # ✅ 检查 session_id
         if not session_id or not session_id.strip():
             error_result = {
                 "status": "error",
@@ -369,47 +393,86 @@ def execute_code(
             }
             return [TextContent(text=json.dumps(error_result, indent=2), type="text")]
         
-        logger.info(f"Executing code in session: {session_id}")
+        logger.info(f"[EXECUTE_CODE] Starting code execution in session: {session_id}")
         
-        # ✅ 检查 session 是否存在于池中
+        # ✅ 检查 session 是否存在
         with _session_lock:
             if session_id not in _session_bindings:
+                logger.error(f"[EXECUTE_CODE] Session not found: {session_id}")
                 error_result = {
                     "status": "error",
                     "error_type": "session_not_found",
                     "session_id": session_id,
-                    "message": f"Session '{session_id}' not found or has been released due to timeout ({SESSION_TIMEOUT}s inactivity). Please create a new session using create_session()."
+                    "message": f"Session '{session_id}' not found or has been released due to timeout ({SESSION_TIMEOUT}s inactivity)."
                 }
                 return [TextContent(text=json.dumps(error_result, indent=2), type="text")]
             
-            # 获取语言信息
             language = _session_bindings[session_id]["language"]
             use_artifact = _session_bindings[session_id].get("use_artifact", False)
+            logger.info(f"[EXECUTE_CODE] Session info - language: {language}, use_artifact: {use_artifact}")
         
         # ✅ 自动检测依赖
         detected_packages = []
         if auto_install:
-            with _session_lock:
-                language = _session_bindings[session_id]["language"]
-            
             detected_packages = _extract_imports_from_code(code, language)
-            logger.info(f"Detected packages from code: {detected_packages}")
+            logger.info(f"[EXECUTE_CODE] Detected packages from code: {detected_packages}")
         
+        # ✅ 获取待安装的库
         pending_libs = []
         with _session_lock:
             if session_id in _session_bindings:
                 pending_libs = _session_bindings[session_id].pop("pending_libraries", [])
-
-        # ✅ 合并用户指定的、自动检测的和待安装的依赖
+        
+        if pending_libs:
+            logger.info(f"[EXECUTE_CODE] Found pending libraries: {pending_libs}")
+        
+        # ✅ 合并所有需要安装的库
         all_libraries = list(set((libraries or []) + detected_packages + pending_libs))
         
         if all_libraries:
-            logger.info(f"Installing libraries: {all_libraries}")
+            logger.info(f"[EXECUTE_CODE] Total libraries to install: {all_libraries}")
+        else:
+            logger.info(f"[EXECUTE_CODE] No libraries to install")
 
-        # ✅ 获取 session（会自动更新 last_access 时间）
+        # ✅ 获取 session
+        logger.info(f"[EXECUTE_CODE] Getting session object for: {session_id}")
         session = _get_or_create_session(session_id, language, use_artifact)
+        logger.info(f"[EXECUTE_CODE] Session object retrieved successfully")
         
-        # 执行代码
+        # ✅ 在执行前验证容器状态
+        try:
+            logger.info(f"[EXECUTE_CODE] Verifying container health...")
+            health_check = session.execute_command("echo 'Container is alive'")
+            logger.info(f"[EXECUTE_CODE] Container health check - exit_code: {health_check.exit_code}")
+            logger.info(f"[EXECUTE_CODE] Container health check output: {health_check.stdout}")
+        except Exception as e:
+            logger.error(f"[EXECUTE_CODE] Container health check failed: {e}", exc_info=True)
+        
+        # ✅ 如果有库需要安装，先验证是否已安装
+        if all_libraries:
+            logger.info(f"[EXECUTE_CODE] Checking if libraries are already installed...")
+            verification_code = _generate_verification_code(language, all_libraries)
+            try:
+                verify_result = session.run(
+                    code=verification_code,
+                    libraries=[],  # 不安装，只检查
+                    timeout=10,
+                )
+                logger.info(f"[EXECUTE_CODE] Pre-check result - exit_code: {verify_result.exit_code}")
+                logger.info(f"[EXECUTE_CODE] Pre-check stdout:\n{verify_result.stdout}")
+                
+                if verify_result.exit_code != 0:
+                    logger.warning(f"[EXECUTE_CODE] Libraries not installed or verification failed")
+                    logger.warning(f"[EXECUTE_CODE] Will attempt to install during code execution")
+                else:
+                    logger.info(f"[EXECUTE_CODE] ✅ All libraries are already installed!")
+            except Exception as e:
+                logger.warning(f"[EXECUTE_CODE] Pre-check failed: {e}")
+        
+        # ✅ 执行代码
+        logger.info(f"[EXECUTE_CODE] Executing user code...")
+        logger.debug(f"[EXECUTE_CODE] Code to execute:\n{code[:200]}...")  # 只记录前200字符
+        
         result = session.run(
             code=code,
             libraries=all_libraries,
@@ -417,7 +480,15 @@ def execute_code(
             clear_plots=False,
         )
         
-        # 处理可视化结果
+        logger.info(f"[EXECUTE_CODE] Code execution completed - exit_code: {result.exit_code}")
+        logger.info(f"[EXECUTE_CODE] Stdout length: {len(result.stdout)} bytes")
+        logger.info(f"[EXECUTE_CODE] Stderr length: {len(result.stderr)} bytes")
+        
+        if result.exit_code != 0:
+            logger.error(f"[EXECUTE_CODE] Execution failed with exit_code: {result.exit_code}")
+            logger.error(f"[EXECUTE_CODE] Error output:\n{result.stderr}")
+        
+        # ... 处理可视化结果和输出（保持原有逻辑）
         if use_artifact and hasattr(result, "plots") and result.plots:
             plot = result.plots[0]
             results.append(
@@ -428,6 +499,7 @@ def execute_code(
                 )
             )
         
+        # ... 处理输出（保持原有逻辑）
         full_stdout = result.stdout
         system_output = full_stdout
         user_content = ""
@@ -441,12 +513,10 @@ def execute_code(
         content_lines = []
         is_system_output = True
         for line in lines:
-            # 如果是系统标记行，归类为系统输出
             if any(marker in line for marker in system_markers):
                 system_lines.append(line)
             else:
-                # 一旦遇到非系统输出，后续都视为用户内容
-                if line.strip():  # 忽略空行
+                if line.strip():
                     is_system_output = False
                 
                 if is_system_output:
@@ -456,16 +526,17 @@ def execute_code(
         system_output = '\n'.join(system_lines)
         user_content = '\n'.join(content_lines)
 
-        # 添加执行结果（包含 session_id）
         result_dict = json.loads(result.to_json(include_plots=False))
         result_dict["stdout"] = system_output
         result_dict["content"] = user_content
         result_dict["session_id"] = session_id
         result_dict["status"] = "success"
         results.append(TextContent(text=json.dumps(result_dict, indent=2), type="text"))
+        
+        logger.info(f"[EXECUTE_CODE] Code execution completed successfully for session: {session_id}")
 
     except Exception as e:
-        logger.exception(f"Error executing code in session {session_id}")
+        logger.exception(f"[EXECUTE_CODE] Error executing code in session {session_id}: {e}")
         error_result = {
             "status": "error",
             "error_type": "execution_error",
@@ -476,6 +547,7 @@ def execute_code(
         return [TextContent(text=json.dumps(error_result, indent=2), type="text")]
 
     return results
+
 
 # ✅ 新增：关闭 session
 @mcp.tool()
