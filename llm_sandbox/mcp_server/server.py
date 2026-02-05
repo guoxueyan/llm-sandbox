@@ -502,34 +502,64 @@ def execute_code(
         except Exception as e:
             logger.error(f"[EXECUTE_CODE] Container health check failed: {e}", exc_info=True)
         
-        # ✅ 如果有库需要安装，先验证是否已安装
+        # ✅ 如果有库需要安装，先单独安装并验证
         if all_libraries:
-            logger.info(f"[EXECUTE_CODE] Checking if libraries are already installed...")
-            verification_code = _generate_verification_code(language, all_libraries)
+            logger.info(f"[EXECUTE_CODE] Pre-installing libraries before code execution...")
             try:
+                # ✅ 步骤1：先单独调用 install 方法
+                logger.info(f"[EXECUTE_CODE] Step 1: Calling session.install({all_libraries})")
+                session.install(all_libraries)
+                logger.info(f"[EXECUTE_CODE] Step 1 completed: session.install() executed")
+                
+                # ✅ 步骤2：验证安装结果
+                logger.info(f"[EXECUTE_CODE] Step 2: Verifying installation...")
+                verification_code = _generate_verification_code(language, all_libraries)
                 verify_result = session.run(
                     code=verification_code,
-                    libraries=[],  # 不安装，只检查
-                    timeout=10,
+                    libraries=[],  # 不再安装，只验证
+                    timeout=30,
                 )
-                logger.info(f"[EXECUTE_CODE] Pre-check result - exit_code: {verify_result.exit_code}")
-                logger.info(f"[EXECUTE_CODE] Pre-check stdout:\n{verify_result.stdout}")
+                logger.info(f"[EXECUTE_CODE] Verification result - exit_code: {verify_result.exit_code}")
+                logger.info(f"[EXECUTE_CODE] Verification stdout:\n{verify_result.stdout}")
                 
                 if verify_result.exit_code != 0:
-                    logger.warning(f"[EXECUTE_CODE] Libraries not installed or verification failed")
-                    logger.warning(f"[EXECUTE_CODE] Will attempt to install during code execution")
+                    logger.error(f"[EXECUTE_CODE] ❌ Pre-installation verification FAILED!")
+                    logger.error(f"[EXECUTE_CODE] Verification stderr:\n{verify_result.stderr}")
+                    
+                    # ✅ 尝试使用 session.run() 重新安装
+                    logger.warning(f"[EXECUTE_CODE] Attempting reinstall via session.run()...")
+                    import_statements = "\n".join([f"import {lib}" for lib in all_libraries])
+                    reinstall_result = session.run(
+                        code=import_statements,
+                        libraries=all_libraries,
+                        timeout=300,
+                    )
+                    logger.info(f"[EXECUTE_CODE] Reinstall result - exit_code: {reinstall_result.exit_code}")
+                    logger.info(f"[EXECUTE_CODE] Reinstall stdout:\n{reinstall_result.stdout}")
+                    
+                    if reinstall_result.exit_code != 0:
+                        logger.error(f"[EXECUTE_CODE] ❌ Reinstall also FAILED!")
+                        logger.error(f"[EXECUTE_CODE] Reinstall stderr:\n{reinstall_result.stderr}")
+                        # 继续执行，让用户看到完整的错误信息
+                    else:
+                        logger.info(f"[EXECUTE_CODE] ✅ Reinstall succeeded!")
+                        all_libraries = []  # 清空，避免重复安装
                 else:
-                    logger.info(f"[EXECUTE_CODE] ✅ All libraries are already installed!")
+                    logger.info(f"[EXECUTE_CODE] ✅ All libraries pre-installed and verified successfully!")
+                    all_libraries = []  # 清空，避免重复安装
+                    
             except Exception as e:
-                logger.warning(f"[EXECUTE_CODE] Pre-check failed: {e}")
+                logger.error(f"[EXECUTE_CODE] Pre-installation failed with exception: {e}", exc_info=True)
+                # 继续执行，让用户看到完整的错误信息
         
-        # ✅ 执行代码
+        # ✅ 执行用户代码
         logger.info(f"[EXECUTE_CODE] Executing user code...")
+        logger.info(f"[EXECUTE_CODE] Libraries parameter for session.run(): {all_libraries}")
         logger.debug(f"[EXECUTE_CODE] Code to execute:\n{code[:200]}...")  # 只记录前200字符
         
         result = session.run(
             code=code,
-            libraries=all_libraries,
+            libraries=all_libraries,  # 如果预安装成功，这里应该是空列表
             timeout=timeout,
             clear_plots=False,
         )
