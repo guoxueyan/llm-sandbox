@@ -10,6 +10,10 @@ from typing import Optional, List
 from contextlib import asynccontextmanager
 import asyncio
 import time
+import os
+from pathlib import Path
+from datetime import datetime
+from logging.handlers import TimedRotatingFileHandler
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -24,10 +28,58 @@ from llm_sandbox.mcp_server.server import (
     get_supported_languages as mcp_get_supported_languages,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s",
-)
+def setup_logging():
+    """配置日志输出到文件和控制台，按日期自动切换"""
+    # 创建 logs 目录
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    # 日志文件名格式：sandbox-2026-02-05.log
+    log_filename = log_dir / f"sandbox-{datetime.now().strftime('%Y-%m-%d')}.log"
+    
+    # 配置日志格式
+    log_format = "[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+    
+    # 创建根 logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # 清除已有的 handlers（避免重复）
+    root_logger.handlers.clear()
+    
+    # ✅ 文件 Handler - 按天切换
+    file_handler = TimedRotatingFileHandler(
+        filename=log_filename,
+        when='midnight',  # 每天午夜切换
+        interval=1,       # 间隔 1 天
+        backupCount=30,   # 保留 30 天的日志
+        encoding='utf-8'
+    )
+    # 设置文件名后缀格式
+    file_handler.suffix = "%Y-%m-%d"
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(log_format, date_format))
+    
+    # ✅ 控制台 Handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(log_format, date_format))
+    
+    # 添加 handlers
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    # 为特定 logger 设置级别
+    logging.getLogger("llm-sandbox-http").setLevel(logging.INFO)
+    logging.getLogger("llm-sandbox-mcp").setLevel(logging.INFO)
+    logging.getLogger("uvicorn").setLevel(logging.INFO)
+    logging.getLogger("uvicorn.access").setLevel(logging.INFO)
+    
+    return root_logger
+
+# ✅ 初始化日志（在导入后立即执行）
+setup_logging()
 logger = logging.getLogger("llm-sandbox-http")
 
 # ==================== Lifespan Event Handler ====================

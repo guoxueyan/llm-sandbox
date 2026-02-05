@@ -13,6 +13,9 @@ from typing import Dict, Optional
 import threading
 import re
 import ast
+from pathlib import Path
+from datetime import datetime
+from logging.handlers import TimedRotatingFileHandler
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent
@@ -25,10 +28,55 @@ from llm_sandbox.session import _check_dependency
 
 from llm_sandbox.pool import create_pool_manager, PooledSandboxSession, ArtifactPooledSandboxSession, PoolConfig
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s",
-)
+def setup_logging():
+    """配置日志输出到文件和控制台，按日期自动切换"""
+    # 创建 logs 目录
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    # 日志文件名格式：sandbox-2026-02-05.log
+    log_filename = log_dir / f"sandbox-{datetime.now().strftime('%Y-%m-%d')}.log"
+    
+    # 配置日志格式
+    log_format = "[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+    
+    # 创建根 logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # 清除已有的 handlers（避免重复）
+    root_logger.handlers.clear()
+    
+    # ✅ 文件 Handler - 按天切换
+    file_handler = TimedRotatingFileHandler(
+        filename=log_filename,
+        when='midnight',  # 每天午夜切换
+        interval=1,       # 间隔 1 天
+        backupCount=30,   # 保留 30 天的日志
+        encoding='utf-8'
+    )
+    # 设置文件名后缀格式
+    file_handler.suffix = "%Y-%m-%d"
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(log_format, date_format))
+    
+    # ✅ 控制台 Handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(log_format, date_format))
+    
+    # 添加 handlers
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    # 为特定 logger 设置级别
+    logging.getLogger("llm-sandbox-mcp").setLevel(logging.INFO)
+    
+    return root_logger
+
+# ✅ 初始化日志（在导入后立即执行）
+setup_logging()
 logger = logging.getLogger("llm-sandbox-mcp")
 
 mcp = FastMCP("llm-sandbox")
@@ -249,12 +297,18 @@ def _extract_imports_from_code(code: str, language: str) -> list[str]:
     
     # 过滤掉标准库（Python 示例）
     if language == "python":
-        stdlib_modules = {
-            'os', 'sys', 'json', 'time', 'datetime', 're', 'math', 
-            'random', 'collections', 'itertools', 'functools', 'typing',
-            'pathlib', 'io', 'logging', 'unittest', 'threading', 'subprocess'
-        }
-        packages = [pkg for pkg in packages if pkg not in stdlib_modules]
+        import sys
+        # ✅ 直接使用 sys.stdlib_module_names（Python 3.10+）
+        if hasattr(sys, 'stdlib_module_names'):
+            packages = [pkg for pkg in packages if pkg not in sys.stdlib_module_names]
+        else:
+            # ✅ Python 3.9 及以下的后备方案
+            stdlib_modules = {
+                'os', 'sys', 'json', 'time', 'datetime', 're', 'math', 'asyncio',
+                'random', 'collections', 'itertools', 'functools', 'typing',
+                'pathlib', 'io', 'logging', 'unittest', 'threading', 'subprocess'
+            }
+            packages = [pkg for pkg in packages if pkg not in stdlib_modules]
     
     return list(set(packages))  # 去重
 
