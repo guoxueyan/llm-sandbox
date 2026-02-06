@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 import asyncio
 import time
 import os
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
@@ -182,6 +183,7 @@ class ExecuteCodeRequest(BaseModel):
     code: str = Field(..., description="Code to execute")
     session_id: str = Field(..., description="Session ID (required)")
     libraries: Optional[List[str]] = Field(default=None, description="Libraries to install")
+    operation: Optional[str] = Field(default=None, description="Git operation: 'create' or 'update' (optional)")
     timeout: int = Field(default=30, description="Execution timeout in seconds")
 
 
@@ -259,6 +261,194 @@ async def create_session(request: CreateSessionRequest):
             }
         )
 
+# ✅ 新增：Git 操作辅助函数
+def is_git_error(returncode: int, stderr: str, stdout: str) -> bool:
+    """判断 git 命令是否真的失败了"""
+    if returncode == 0:
+        return False
+    
+    error_keywords = ["error:", "fatal:", "ERROR", "FATAL", "failed"]
+    combined_output = (stderr + stdout).lower()
+    
+    if any(keyword.lower() in combined_output for keyword in error_keywords):
+        return True
+    
+    return False
+
+def check_git_conflicts(output: str) -> bool:
+    """检查 git pull 输出中是否有冲突"""
+    conflict_keywords = ["CONFLICT", "conflict", "Merge conflict"]
+    has_conflict = any(keyword in output for keyword in conflict_keywords)
+    if has_conflict:
+        logger.warning(f"检测到 Git 冲突: {output}")
+    else:
+        logger.info("未检测到 Git 冲突")
+    return has_conflict
+
+# ✅ 新增：处理 Git 操作的异步函数
+async def _handle_git_operation(operation: str, code: str):
+    """处理 Git 操作：克隆或更新仓库，并写入工具文件
+    
+    Args:
+        operation: 'create' 或 'update'
+        code: 要写入的代码内容
+        
+    Raises:
+        Exception: 如果 Git 操作失败
+    """
+    # ✅ 使用默认的工具文件名（可以根据需要修改）
+    tool_name = "sandbox_generated_tool"
+    
+    logger.info(f"[GIT_OPERATION] 开始处理 Git 操作: operation={operation}, tool_name={tool_name}")
+    
+    # 仓库配置
+    REPO_URL = os.environ.get(
+        "MCP_SERVER_REPO_URL", 
+        "http://gxy01953892:qq2510725526.@gitlab.alibaba-inc.com/edu-quark/mcp-server.git"
+    )
+    REPO_BRANCH = "medical"
+    REPO_DIR = Path("./mcp-server")
+    TOOLS_DIR = REPO_DIR / "app" / "tools"
+    
+    try:
+        if operation == "create":
+            logger.info("[GIT_OPERATION] 执行 create 操作...")
+            
+            # 如果目录已存在，先删除
+            if REPO_DIR.exists():
+                logger.warning(f"[GIT_OPERATION] 仓库目录已存在: {REPO_DIR}，删除旧目录...")
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["rm", "-rf", str(REPO_DIR)],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+                logger.info("[GIT_OPERATION] 旧目录已删除")
+            
+            # 克隆仓库
+            logger.info(f"[GIT_OPERATION] 克隆仓库: {REPO_URL} (分支: {REPO_BRANCH})")
+            clone_result = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "clone", "-b", REPO_BRANCH, REPO_URL, str(REPO_DIR)],
+                capture_output=True,
+                text=True
+            )
+            
+            logger.info(f"[GIT_OPERATION] git clone 返回码: {clone_result.returncode}")
+            logger.info(f"[GIT_OPERATION] git clone stdout: {clone_result.stdout}")
+            
+            if clone_result.returncode != 0:
+                error_msg = f"git clone 失败: {clone_result.stderr}"
+                logger.error(f"[GIT_OPERATION] {error_msg}")
+                raise Exception(error_msg)
+            
+            logger.info(f"[GIT_OPERATION] 仓库克隆成功: {REPO_DIR}")
+            
+        elif operation == "update":
+            logger.info("[GIT_OPERATION] 执行 update 操作...")
+            
+            # 检查仓库目录是否存在
+            if not REPO_DIR.exists():
+                error_msg = f"仓库目录不存在: {REPO_DIR}，请先使用 'create' 操作"
+                logger.error(f"[GIT_OPERATION] {error_msg}")
+                raise Exception(error_msg)
+            
+            # 步骤1: checkout 掉所有未提交的文件
+            logger.info("[GIT_OPERATION] 步骤1: checkout 所有未提交文件...")
+            checkout_all_result = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "checkout", "."],
+                cwd=REPO_DIR,
+                capture_output=True,
+                text=True
+            )
+            
+            logger.info(f"[GIT_OPERATION] git checkout . 返回码: {checkout_all_result.returncode}")
+            
+            if checkout_all_result.returncode != 0:
+                error_msg = f"git checkout . 失败: {checkout_all_result.stderr}"
+                logger.error(f"[GIT_OPERATION] {error_msg}")
+                raise Exception(error_msg)
+            
+            logger.info("[GIT_OPERATION] 成功 checkout 所有未提交文件")
+            
+            # 步骤2: 切换到 medical 分支
+            logger.info(f"[GIT_OPERATION] 步骤2: 切换到 {REPO_BRANCH} 分支...")
+            checkout_result = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "checkout", REPO_BRANCH],
+                cwd=REPO_DIR,
+                capture_output=True,
+                text=True
+            )
+            
+            logger.info(f"[GIT_OPERATION] git checkout {REPO_BRANCH} 返回码: {checkout_result.returncode}")
+            
+            if checkout_result.returncode != 0:
+                error_msg = f"git checkout {REPO_BRANCH} 失败: {checkout_result.stderr}"
+                logger.error(f"[GIT_OPERATION] {error_msg}")
+                raise Exception(error_msg)
+            
+            logger.info(f"[GIT_OPERATION] 成功切换到 {REPO_BRANCH} 分支")
+            
+            # 步骤3: 拉取最新代码
+            logger.info(f"[GIT_OPERATION] 步骤3: 拉取 {REPO_BRANCH} 分支最新代码...")
+            pull_result = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "pull", "origin", REPO_BRANCH],
+                cwd=REPO_DIR,
+                capture_output=True,
+                text=True
+            )
+            
+            logger.info(f"[GIT_OPERATION] git pull 返回码: {pull_result.returncode}")
+            logger.info(f"[GIT_OPERATION] git pull stdout: {pull_result.stdout}")
+            
+            if is_git_error(pull_result.returncode, pull_result.stderr, pull_result.stdout):
+                error_msg = f"git pull 失败: {pull_result.stderr}"
+                logger.error(f"[GIT_OPERATION] {error_msg}")
+                raise Exception(error_msg)
+            
+            # 步骤4: 检查冲突
+            logger.info("[GIT_OPERATION] 步骤4: 检查是否有冲突...")
+            combined_output = pull_result.stdout + pull_result.stderr
+            if check_git_conflicts(combined_output):
+                error_msg = "检测到 Git 冲突，请手动解决冲突后再试"
+                logger.error(f"[GIT_OPERATION] {error_msg}")
+                raise Exception(error_msg)
+            
+            logger.info("[GIT_OPERATION] 仓库更新成功，无冲突")
+            
+        else:
+            error_msg = f"无效的 operation 值: {operation}，必须是 'create' 或 'update'"
+            logger.error(f"[GIT_OPERATION] {error_msg}")
+            raise ValueError(error_msg)
+        
+        # ✅ 确保 tools 目录存在
+        logger.info(f"[GIT_OPERATION] 确保工具目录存在: {TOOLS_DIR}")
+        await asyncio.to_thread(TOOLS_DIR.mkdir, parents=True, exist_ok=True)
+        
+        # ✅ 写入或更新工具文件
+        tool_file_path = TOOLS_DIR / f"{tool_name}.py"
+        logger.info(f"[GIT_OPERATION] 写入代码到文件: {tool_file_path}")
+        
+        def write_file():
+            with open(tool_file_path, "w", encoding="utf-8") as f:
+                f.write(code)
+        
+        await asyncio.to_thread(write_file)
+        
+        action = "创建" if operation == "create" else "更新"
+        logger.info(f"[GIT_OPERATION] ✅ 工具文件{action}成功: {tool_file_path}")
+        
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Git 命令执行失败: {e.stderr if e.stderr else str(e)}"
+        logger.error(f"[GIT_OPERATION] {error_msg}")
+        raise Exception(error_msg)
+    except Exception as e:
+        logger.error(f"[GIT_OPERATION] Git 操作失败: {e}")
+        raise
 
 @app.post(
     "/api/v1/execute",
@@ -280,7 +470,33 @@ async def execute_code(request: ExecuteCodeRequest):
     """
     try:
         logger.info(f"Executing code in session: {request.session_id}")
-        
+
+        # ✅ 新增：只有当 operation 存在且 operation 为 'create' 或 'update' 时才处理 Git 操作
+        if request.operation:
+            if request.operation in ["create", "update"]:
+                logger.info(f"检测到 Git 操作请求: operation={request.operation}")
+                try:
+                    await _handle_git_operation(
+                        operation=request.operation,
+                        code=request.code
+                    )
+                    logger.info("Git 操作完成，继续执行代码...")
+                except Exception as e:
+                    logger.error(f"Git 操作失败: {e}")
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail={
+                            "status": "error",
+                            "error_type": "git_operation_error",
+                            "error": str(e),
+                            "message": f"Git {request.operation} 操作失败"
+                        }
+                    )
+            else:
+                logger.warning(f"无效的 operation 值: {request.operation}，忽略 Git 操作")
+        else:
+            logger.info("未提供 operation 参数，跳过 Git 操作")
+
         # 调用 MCP server 的 execute_code 函数
         results = mcp_execute_code(
             code=request.code,
