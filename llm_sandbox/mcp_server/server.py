@@ -95,6 +95,8 @@ _session_lock = threading.Lock()
 SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT", "3600"))  # 1 小时
 SESSION_CLEANUP_INTERVAL = int(os.environ.get("SESSION_CLEANUP_INTERVAL", "300"))  # 5 分钟
 
+LOCAL_MODULES = {'env_config_manager'}  # 本地模块列表，不应该通过 pip 安装
+
 def _get_backend() -> SandboxBackend:
     """Get the backend to use for the sandbox session."""
     backend = SandboxBackend(os.environ.get("BACKEND", "docker"))
@@ -309,7 +311,7 @@ def _extract_imports_from_code(code: str, language: str) -> list[str]:
                 'pathlib', 'io', 'logging', 'unittest', 'threading', 'subprocess'
             }
             packages = [pkg for pkg in packages if pkg not in stdlib_modules]
-    
+        packages = [pkg for pkg in packages if pkg not in LOCAL_MODULES]
     return list(set(packages))  # 去重
 
 # ✅ 新增：创建 session
