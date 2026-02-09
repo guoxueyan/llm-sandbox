@@ -286,7 +286,7 @@ def check_git_conflicts(output: str) -> bool:
     return has_conflict
 
 # ✅ 新增：处理 Git 操作的异步函数
-async def _handle_git_operation(code: str):
+async def _handle_git_operation(code: str, session_id: str):
     """处理 Git 操作：根据目录是否存在自动选择克隆或更新
     
     Args:
@@ -300,21 +300,30 @@ async def _handle_git_operation(code: str):
     
     logger.info(f"[GIT_OPERATION] 开始处理 Git 操作: tool_name={tool_name}")
     
+    # ✅ 为每个 session 创建独立的工作目录
+    SESSION_WORKSPACE_ROOT = Path("./session_workspaces")
+    SESSION_WORKSPACE_ROOT.mkdir(exist_ok=True)
+    
     # 仓库配置
     REPO_URL = os.environ.get(
         "MCP_SERVER_REPO_URL", 
         "http://gxy01953892:qq2510725526.@gitlab.alibaba-inc.com/edu-quark/mcp-server.git"
     )
     REPO_BRANCH = "medical"
-    REPO_DIR = Path("./mcp-server")
+    # ✅ 使用 session_id 创建独立目录
+    REPO_DIR = SESSION_WORKSPACE_ROOT / session_id / "mcp-server"
     TOOLS_DIR = REPO_DIR / "app" / "tools"
+    
+    logger.info(f"[GIT_OPERATION] Session 工作目录: {REPO_DIR}")
     
     try:
         # ✅ 检查目录是否存在
         if not REPO_DIR.exists():
             # ========== 目录不存在：执行克隆操作 ==========
-            logger.info("[GIT_OPERATION] 目录不存在，执行克隆操作...")
+            logger.info(f"[GIT_OPERATION] Session {session_id} 目录不存在，执行克隆操作...")
             
+            REPO_DIR.parent.mkdir(parents=True, exist_ok=True)
+
             logger.info(f"[GIT_OPERATION] 克隆仓库: {REPO_URL} (分支: {REPO_BRANCH})")
             clone_result = await asyncio.to_thread(
                 subprocess.run,
@@ -331,11 +340,11 @@ async def _handle_git_operation(code: str):
                 logger.error(f"[GIT_OPERATION] {error_msg}")
                 raise Exception(error_msg)
             
-            logger.info(f"[GIT_OPERATION] 仓库克隆成功: {REPO_DIR}")
+            logger.info(f"[GIT_OPERATION] Session {session_id} 仓库克隆成功: {REPO_DIR}")
             
         else:
             # ========== 目录存在：执行更新操作 ==========
-            logger.info("[GIT_OPERATION] 目录已存在，执行更新操作...")
+            logger.info(f"[GIT_OPERATION] Session {session_id} 目录已存在，执行更新操作...")
             
             # 步骤1: checkout 掉所有未提交的文件
             logger.info("[GIT_OPERATION] 步骤1: checkout 所有未提交文件...")
@@ -457,7 +466,7 @@ async def execute_code(request: ExecuteCodeRequest):
         if request.operation is True:
             logger.info(f"检测到 Git 操作请求: operation=True")
             try:
-                await _handle_git_operation(code=request.code)
+                await _handle_git_operation(code=request.code, session_id=request.session_id)
                 logger.info("Git 操作完成，继续执行代码...")
             except Exception as e:
                 logger.error(f"Git 操作失败: {e}")
@@ -559,6 +568,12 @@ async def close_session(session_id: str):
     """
     try:
         logger.info(f"Closing session: {session_id}")
+
+        session_workspace = Path("./session_workspaces") / session_id
+        if session_workspace.exists():
+            import shutil
+            await asyncio.to_thread(shutil.rmtree, session_workspace)
+            logger.info(f"Cleaned up workspace for session: {session_id}")
         
         # 调用 MCP server 的 close_session 函数
         result = mcp_close_session(session_id=session_id)
