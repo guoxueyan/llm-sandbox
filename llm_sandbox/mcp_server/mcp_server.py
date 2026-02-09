@@ -425,8 +425,14 @@ async def _handle_git_operation(code: str, session_id: str, session):
             logger.error(f"[GIT_OPERATION] {error_msg}")
             raise Exception(error_msg)
         
-        logger.info(f"[GIT_OPERATION] ✅ 工具文件操作成功: {tool_file_path}")
-        
+        # ✅ 新增：在 session 绑定中标记已有 mcp-server 代码（移到验证之前，确保一定执行）
+        from llm_sandbox.mcp_server.server import _session_bindings, _session_lock
+
+        with _session_lock:
+            if session_id in _session_bindings:
+                _session_bindings[session_id]["has_mcp_server"] = True
+                logger.info(f"[GIT_OPERATION] ✅ 已标记 session {session_id} 拥有 mcp-server 代码")
+
         # ✅ 验证文件是否写入成功
         verify_result = session.execute_command(f"test -f {tool_file_path} && echo 'exists' || echo 'not_found'")
         logger.info(f"[GIT_OPERATION] 文件验证结果: {verify_result.stdout.strip()}")

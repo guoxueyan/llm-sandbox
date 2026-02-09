@@ -555,23 +555,40 @@ def execute_code(
                 # 继续执行，让用户看到完整的错误信息
         
         # ✅ 新增：检查是否需要添加 mcp-server 路径到 sys.path
-        # 检查容器内是否存在 mcp-server 目录
-        check_mcp_dir = session.execute_command("test -d /sandbox/mcp-server && echo 'exists' || echo 'not_exists'")
-        mcp_dir_exists = check_mcp_dir.stdout.strip() == 'exists'
-        
-        if mcp_dir_exists:
-            logger.info(f"[EXECUTE_CODE] 检测到 mcp-server 目录，将添加到 sys.path")
+        # 方式1：检查 session 绑定中的标记
+        has_mcp_server = False
+        with _session_lock:
+            if session_id in _session_bindings:
+                has_mcp_server = _session_bindings[session_id].get("has_mcp_server", False)
+                logger.info(f"[EXECUTE_CODE] Session 标记 has_mcp_server: {has_mcp_server}")
+
+        # 方式2：如果没有标记，再检查容器内目录
+        if not has_mcp_server:
+            logger.info(f"[EXECUTE_CODE] 检查容器内是否存在 mcp-server 目录...")
+            try:
+                check_mcp_dir = session.execute_command("test -d /sandbox/mcp-server && echo 'exists' || echo 'not_exists'")
+                logger.info(f"[EXECUTE_CODE] 目录检查结果: stdout='{check_mcp_dir.stdout}', stderr='{check_mcp_dir.stderr}', exit_code={check_mcp_dir.exit_code}")
+                has_mcp_server = check_mcp_dir.stdout.strip() == 'exists'
+                logger.info(f"[EXECUTE_CODE] 目录检查判断结果: has_mcp_server={has_mcp_server}")
+            except Exception as e:
+                logger.error(f"[EXECUTE_CODE] 目录检查失败: {e}")
+                has_mcp_server = False
+
+        if has_mcp_server:
+            logger.info(f"[EXECUTE_CODE] ✅ 检测到 mcp-server 目录，将添加到 sys.path")
             # 在用户代码前添加 sys.path 设置
-            path_setup_code = """
-import sys
-if '/sandbox/mcp-server/app' not in sys.path:
-    sys.path.insert(0, '/sandbox/mcp-server/app')
-if '/sandbox/mcp-server' not in sys.path:
-    sys.path.insert(0, '/sandbox/mcp-server')
-"""
+            path_setup_code = """import sys
+        if '/sandbox/mcp-server/app' not in sys.path:
+            sys.path.insert(0, '/sandbox/mcp-server/app')
+        if '/sandbox/mcp-server' not in sys.path:
+            sys.path.insert(0, '/sandbox/mcp-server')
+        """
             # 将路径设置代码添加到用户代码前面
             code = path_setup_code + "\n" + code
-            logger.info(f"[EXECUTE_CODE] 已添加 sys.path 设置到代码前")
+            logger.info(f"[EXECUTE_CODE] ✅ 已添加 sys.path 设置到代码前")
+        else:
+            logger.warning(f"[EXECUTE_CODE] ⚠️  未检测到 mcp-server 目录，跳过 sys.path 设置")
+
 
         # ✅ 执行用户代码
         logger.info(f"[EXECUTE_CODE] Executing user code...")
