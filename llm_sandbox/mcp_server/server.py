@@ -554,6 +554,25 @@ def execute_code(
                 logger.error(f"[EXECUTE_CODE] Pre-installation failed with exception: {e}", exc_info=True)
                 # 继续执行，让用户看到完整的错误信息
         
+        # ✅ 新增：检查是否需要添加 mcp-server 路径到 sys.path
+        # 检查容器内是否存在 mcp-server 目录
+        check_mcp_dir = session.execute_command("test -d /sandbox/mcp-server && echo 'exists' || echo 'not_exists'")
+        mcp_dir_exists = check_mcp_dir.stdout.strip() == 'exists'
+        
+        if mcp_dir_exists:
+            logger.info(f"[EXECUTE_CODE] 检测到 mcp-server 目录，将添加到 sys.path")
+            # 在用户代码前添加 sys.path 设置
+            path_setup_code = """
+import sys
+if '/sandbox/mcp-server/app' not in sys.path:
+    sys.path.insert(0, '/sandbox/mcp-server/app')
+if '/sandbox/mcp-server' not in sys.path:
+    sys.path.insert(0, '/sandbox/mcp-server')
+"""
+            # 将路径设置代码添加到用户代码前面
+            code = path_setup_code + "\n" + code
+            logger.info(f"[EXECUTE_CODE] 已添加 sys.path 设置到代码前")
+
         # ✅ 执行用户代码
         logger.info(f"[EXECUTE_CODE] Executing user code...")
         logger.info(f"[EXECUTE_CODE] Libraries parameter for session.run(): {all_libraries}")
