@@ -97,6 +97,10 @@ SESSION_CLEANUP_INTERVAL = int(os.environ.get("SESSION_CLEANUP_INTERVAL", "300")
 
 LOCAL_MODULES = {'env_config_manager'}  # 本地模块列表，不应该通过 pip 安装
 
+LOCAL_MODULE_DEPENDENCIES = {
+    'env_config_manager': ['pyyaml'],  # env_config_manager 依赖 pyyaml
+}
+
 def _get_backend() -> SandboxBackend:
     """Get the backend to use for the sandbox session."""
     backend = SandboxBackend(os.environ.get("BACKEND", "docker"))
@@ -472,6 +476,18 @@ def execute_code(
         if auto_install:
             detected_packages = _extract_imports_from_code(code, language)
             logger.info(f"[EXECUTE_CODE] Detected packages from code: {detected_packages}")
+
+            # ✅ 新增：检查是否使用了本地模块，如果是则添加其依赖
+            for module in LOCAL_MODULES:
+                if module in detected_packages:
+                    # 从检测列表中移除本地模块
+                    detected_packages.remove(module)
+                    logger.info(f"[EXECUTE_CODE] 检测到本地模块 {module}，已从安装列表移除")
+                    # 添加本地模块的依赖
+                    if module in LOCAL_MODULE_DEPENDENCIES:
+                        module_deps = LOCAL_MODULE_DEPENDENCIES[module]
+                        detected_packages.extend(module_deps)
+                        logger.info(f"[EXECUTE_CODE] 添加本地模块 {module} 的依赖: {module_deps}")
         
         # ✅ 获取待安装的库
         pending_libs = []
