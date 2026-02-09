@@ -578,11 +578,11 @@ def execute_code(
             logger.info(f"[EXECUTE_CODE] ✅ 检测到 mcp-server 目录，将添加到 sys.path")
             # 在用户代码前添加 sys.path 设置
             path_setup_code = """import sys
-        if '/sandbox/mcp-server/app' not in sys.path:
-            sys.path.insert(0, '/sandbox/mcp-server/app')
-        if '/sandbox/mcp-server' not in sys.path:
-            sys.path.insert(0, '/sandbox/mcp-server')
-        """
+if '/sandbox/mcp-server/app' not in sys.path:
+    sys.path.insert(0, '/sandbox/mcp-server/app')
+if '/sandbox/mcp-server' not in sys.path:
+    sys.path.insert(0, '/sandbox/mcp-server')
+"""
             # 将路径设置代码添加到用户代码前面
             code = path_setup_code + "\n" + code
             logger.info(f"[EXECUTE_CODE] ✅ 已添加 sys.path 设置到代码前")
