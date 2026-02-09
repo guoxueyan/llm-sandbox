@@ -316,7 +316,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
     
     try:
         # ✅ 检查容器内目录是否存在
-        check_cmd = f"test -d {REPO_DIR} && echo 'exists' || echo 'not_exists'"
+        check_cmd = f"sh -c 'test -d {REPO_DIR} && echo exists || echo not_exists'"
         logger.info(f"[GIT_OPERATION] 执行目录检查命令: {check_cmd}")
         
         check_dir_result = session.execute_command(check_cmd)
@@ -420,7 +420,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
         tool_file_path = f"{TOOLS_DIR}/{tool_name}.py"
         
         # 检查文件是否存在
-        check_file_result = session.execute_command(f"test -f {tool_file_path} && echo 'exists' || echo 'not_exists'")
+        check_file_result = session.execute_command(f"sh -c 'test -f {tool_file_path} && echo exists || echo not_exists'")
         file_exists = check_file_result.stdout.strip() == 'exists'
         
         if file_exists:
@@ -449,7 +449,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
                 logger.info(f"[GIT_OPERATION] ✅ 已标记 session {session_id} 拥有 mcp-server 代码")
 
         # ✅ 验证文件是否写入成功
-        verify_result = session.execute_command(f"test -f {tool_file_path} && echo 'exists' || echo 'not_found'")
+        verify_result = session.execute_command(f"sh -c 'test -f {tool_file_path} && echo exists || echo not_found'")
         logger.info(f"[GIT_OPERATION] 文件验证结果: {verify_result.stdout.strip()}")
         
     except Exception as e:
