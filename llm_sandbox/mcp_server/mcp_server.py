@@ -286,23 +286,20 @@ def check_git_conflicts(output: str) -> bool:
     return has_conflict
 
 # ✅ 新增：处理 Git 操作的异步函数
-async def _handle_git_operation(code: str, session_id: str):
-    """处理 Git 操作：根据目录是否存在自动选择克隆或更新
+async def _handle_git_operation(code: str, session_id: str, session):
+    """在容器内处理 Git 操作：根据目录是否存在自动选择克隆或更新
     
     Args:
         code: 要写入的代码内容
+        session_id: Session ID
+        session: Session 对象（容器会话）
         
     Raises:
         Exception: 如果 Git 操作失败
     """
-    # ✅ 使用默认的工具文件名
     tool_name = "sandbox_generated_tool"
     
-    logger.info(f"[GIT_OPERATION] 开始处理 Git 操作: tool_name={tool_name}")
-    
-    # ✅ 为每个 session 创建独立的工作目录
-    SESSION_WORKSPACE_ROOT = Path("./session_workspaces")
-    SESSION_WORKSPACE_ROOT.mkdir(exist_ok=True)
+    logger.info(f"[GIT_OPERATION] 开始在容器内处理 Git 操作: tool_name={tool_name}, session_id={session_id}")
     
     # 仓库配置
     REPO_URL = os.environ.get(
@@ -310,55 +307,50 @@ async def _handle_git_operation(code: str, session_id: str):
         "http://gxy01953892:qq2510725526.@gitlab.alibaba-inc.com/edu-quark/mcp-server.git"
     )
     REPO_BRANCH = "medical"
-    # ✅ 使用 session_id 创建独立目录
-    REPO_DIR = SESSION_WORKSPACE_ROOT / session_id / "mcp-server"
-    TOOLS_DIR = REPO_DIR / "app" / "tools"
     
-    logger.info(f"[GIT_OPERATION] Session 工作目录: {REPO_DIR}")
+    # ✅ 容器内的路径
+    REPO_DIR = "/sandbox/mcp-server"
+    TOOLS_DIR = f"{REPO_DIR}/app/tools"
+    
+    logger.info(f"[GIT_OPERATION] 容器内工作目录: {REPO_DIR}")
     
     try:
-        # ✅ 检查目录是否存在
-        if not REPO_DIR.exists():
+        # ✅ 检查容器内目录是否存在
+        check_dir_result = session.execute_command(f"test -d {REPO_DIR} && echo 'exists' || echo 'not_exists'")
+        dir_exists = check_dir_result.stdout.strip() == 'exists'
+        
+        if not dir_exists:
             # ========== 目录不存在：执行克隆操作 ==========
-            logger.info(f"[GIT_OPERATION] Session {session_id} 目录不存在，执行克隆操作...")
+            logger.info(f"[GIT_OPERATION] 容器内目录不存在，执行克隆操作...")
             
-            REPO_DIR.parent.mkdir(parents=True, exist_ok=True)
-
-            logger.info(f"[GIT_OPERATION] 克隆仓库: {REPO_URL} (分支: {REPO_BRANCH})")
-            clone_result = await asyncio.to_thread(
-                subprocess.run,
-                ["git", "clone", "-b", REPO_BRANCH, REPO_URL, str(REPO_DIR)],
-                capture_output=True,
-                text=True
-            )
+            # 在容器内执行 git clone
+            clone_cmd = f"cd /sandbox && git clone -b {REPO_BRANCH} {REPO_URL} mcp-server"
+            logger.info(f"[GIT_OPERATION] 执行命令: {clone_cmd}")
             
-            logger.info(f"[GIT_OPERATION] git clone 返回码: {clone_result.returncode}")
+            clone_result = session.execute_command(clone_cmd)
+            
+            logger.info(f"[GIT_OPERATION] git clone 返回码: {clone_result.exit_code}")
             logger.info(f"[GIT_OPERATION] git clone stdout: {clone_result.stdout}")
             
-            if clone_result.returncode != 0:
+            if clone_result.exit_code != 0:
                 error_msg = f"git clone 失败: {clone_result.stderr}"
                 logger.error(f"[GIT_OPERATION] {error_msg}")
                 raise Exception(error_msg)
             
-            logger.info(f"[GIT_OPERATION] Session {session_id} 仓库克隆成功: {REPO_DIR}")
+            logger.info(f"[GIT_OPERATION] 容器内仓库克隆成功: {REPO_DIR}")
             
         else:
             # ========== 目录存在：执行更新操作 ==========
-            logger.info(f"[GIT_OPERATION] Session {session_id} 目录已存在，执行更新操作...")
+            logger.info(f"[GIT_OPERATION] 容器内目录已存在，执行更新操作...")
             
             # 步骤1: checkout 掉所有未提交的文件
             logger.info("[GIT_OPERATION] 步骤1: checkout 所有未提交文件...")
-            checkout_all_result = await asyncio.to_thread(
-                subprocess.run,
-                ["git", "checkout", "."],
-                cwd=REPO_DIR,
-                capture_output=True,
-                text=True
-            )
+            checkout_all_cmd = f"cd {REPO_DIR} && git checkout ."
+            checkout_all_result = session.execute_command(checkout_all_cmd)
             
-            logger.info(f"[GIT_OPERATION] git checkout . 返回码: {checkout_all_result.returncode}")
+            logger.info(f"[GIT_OPERATION] git checkout . 返回码: {checkout_all_result.exit_code}")
             
-            if checkout_all_result.returncode != 0:
+            if checkout_all_result.exit_code != 0:
                 error_msg = f"git checkout . 失败: {checkout_all_result.stderr}"
                 logger.error(f"[GIT_OPERATION] {error_msg}")
                 raise Exception(error_msg)
@@ -367,17 +359,12 @@ async def _handle_git_operation(code: str, session_id: str):
             
             # 步骤2: 切换到 medical 分支
             logger.info(f"[GIT_OPERATION] 步骤2: 切换到 {REPO_BRANCH} 分支...")
-            checkout_result = await asyncio.to_thread(
-                subprocess.run,
-                ["git", "checkout", REPO_BRANCH],
-                cwd=REPO_DIR,
-                capture_output=True,
-                text=True
-            )
+            checkout_cmd = f"cd {REPO_DIR} && git checkout {REPO_BRANCH}"
+            checkout_result = session.execute_command(checkout_cmd)
             
-            logger.info(f"[GIT_OPERATION] git checkout {REPO_BRANCH} 返回码: {checkout_result.returncode}")
+            logger.info(f"[GIT_OPERATION] git checkout {REPO_BRANCH} 返回码: {checkout_result.exit_code}")
             
-            if checkout_result.returncode != 0:
+            if checkout_result.exit_code != 0:
                 error_msg = f"git checkout {REPO_BRANCH} 失败: {checkout_result.stderr}"
                 logger.error(f"[GIT_OPERATION] {error_msg}")
                 raise Exception(error_msg)
@@ -386,18 +373,13 @@ async def _handle_git_operation(code: str, session_id: str):
             
             # 步骤3: 拉取最新代码
             logger.info(f"[GIT_OPERATION] 步骤3: 拉取 {REPO_BRANCH} 分支最新代码...")
-            pull_result = await asyncio.to_thread(
-                subprocess.run,
-                ["git", "pull", "origin", REPO_BRANCH],
-                cwd=REPO_DIR,
-                capture_output=True,
-                text=True
-            )
+            pull_cmd = f"cd {REPO_DIR} && git pull origin {REPO_BRANCH}"
+            pull_result = session.execute_command(pull_cmd)
             
-            logger.info(f"[GIT_OPERATION] git pull 返回码: {pull_result.returncode}")
+            logger.info(f"[GIT_OPERATION] git pull 返回码: {pull_result.exit_code}")
             logger.info(f"[GIT_OPERATION] git pull stdout: {pull_result.stdout}")
             
-            if is_git_error(pull_result.returncode, pull_result.stderr, pull_result.stdout):
+            if is_git_error(pull_result.exit_code, pull_result.stderr, pull_result.stdout):
                 error_msg = f"git pull 失败: {pull_result.stderr}"
                 logger.error(f"[GIT_OPERATION] {error_msg}")
                 raise Exception(error_msg)
@@ -414,30 +396,43 @@ async def _handle_git_operation(code: str, session_id: str):
         
         # ✅ 确保 tools 目录存在
         logger.info(f"[GIT_OPERATION] 确保工具目录存在: {TOOLS_DIR}")
-        await asyncio.to_thread(TOOLS_DIR.mkdir, parents=True, exist_ok=True)
+        mkdir_result = session.execute_command(f"mkdir -p {TOOLS_DIR}")
+        if mkdir_result.exit_code != 0:
+            logger.error(f"[GIT_OPERATION] 创建目录失败: {mkdir_result.stderr}")
+            raise Exception(f"创建目录失败: {mkdir_result.stderr}")
         
         # ✅ 写入或更新工具文件
-        tool_file_path = TOOLS_DIR / f"{tool_name}.py"
+        tool_file_path = f"{TOOLS_DIR}/{tool_name}.py"
         
-        if tool_file_path.exists():
+        # 检查文件是否存在
+        check_file_result = session.execute_command(f"test -f {tool_file_path} && echo 'exists' || echo 'not_exists'")
+        file_exists = check_file_result.stdout.strip() == 'exists'
+        
+        if file_exists:
             logger.info(f"[GIT_OPERATION] 文件已存在，更新代码到文件: {tool_file_path}")
         else:
             logger.info(f"[GIT_OPERATION] 文件不存在，创建新文件: {tool_file_path}")
         
-        def write_file():
-            with open(tool_file_path, "w", encoding="utf-8") as f:
-                f.write(code)
+        # 使用 base64 编码写入文件（避免特殊字符问题）
+        import base64
+        content_b64 = base64.b64encode(code.encode('utf-8')).decode('ascii')
+        write_cmd = f"echo '{content_b64}' | base64 -d > {tool_file_path}"
         
-        await asyncio.to_thread(write_file)
+        write_result = session.execute_command(write_cmd)
+        
+        if write_result.exit_code != 0:
+            error_msg = f"写入文件失败: {write_result.stderr}"
+            logger.error(f"[GIT_OPERATION] {error_msg}")
+            raise Exception(error_msg)
         
         logger.info(f"[GIT_OPERATION] ✅ 工具文件操作成功: {tool_file_path}")
         
-    except subprocess.CalledProcessError as e:
-        error_msg = f"Git 命令执行失败: {e.stderr if e.stderr else str(e)}"
-        logger.error(f"[GIT_OPERATION] {error_msg}")
-        raise Exception(error_msg)
+        # ✅ 验证文件是否写入成功
+        verify_result = session.execute_command(f"test -f {tool_file_path} && echo 'exists' || echo 'not_found'")
+        logger.info(f"[GIT_OPERATION] 文件验证结果: {verify_result.stdout.strip()}")
+        
     except Exception as e:
-        logger.error(f"[GIT_OPERATION] Git 操作失败: {e}")
+        logger.error(f"[GIT_OPERATION] 容器内 Git 操作失败: {e}")
         raise
 
 
@@ -466,17 +461,42 @@ async def execute_code(request: ExecuteCodeRequest):
         if request.operation is True:
             logger.info(f"检测到 Git 操作请求: operation=True")
             try:
-                await _handle_git_operation(code=request.code, session_id=request.session_id)
-                logger.info("Git 操作完成，继续执行代码...")
+                # ✅ 步骤1: 获取 session 对象
+                from llm_sandbox.mcp_server.server import _get_or_create_session, _session_lock, _session_bindings
+                
+                with _session_lock:
+                    if request.session_id not in _session_bindings:
+                        logger.error(f"Session not found: {request.session_id}")
+                        raise HTTPException(
+                            status_code=status.HTTP_404_NOT_FOUND,
+                            detail={
+                                "status": "error",
+                                "error_type": "session_not_found",
+                                "message": f"Session '{request.session_id}' not found"
+                            }
+                        )
+                    
+                    language = _session_bindings[request.session_id]["language"]
+                    use_artifact = _session_bindings[request.session_id].get("use_artifact", False)
+                
+                # 获取 session 对象
+                session = _get_or_create_session(request.session_id, language, use_artifact)
+                
+                # ✅ 步骤2: 在容器内执行 Git 操作
+                await _handle_git_operation(code=request.code, session_id=request.session_id, session=session)
+                logger.info("容器内 Git 操作完成，继续执行代码...")
+                
+            except HTTPException:
+                raise
             except Exception as e:
-                logger.error(f"Git 操作失败: {e}")
+                logger.error(f"容器内 Git 操作失败: {e}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail={
                         "status": "error",
                         "error_type": "git_operation_error",
                         "error": str(e),
-                        "message": "Git 操作失败"
+                        "message": "容器内 Git 操作失败"
                     }
                 )
         else:
@@ -568,12 +588,6 @@ async def close_session(session_id: str):
     """
     try:
         logger.info(f"Closing session: {session_id}")
-
-        session_workspace = Path("./session_workspaces") / session_id
-        if session_workspace.exists():
-            import shutil
-            await asyncio.to_thread(shutil.rmtree, session_workspace)
-            logger.info(f"Cleaned up workspace for session: {session_id}")
         
         # 调用 MCP server 的 close_session 函数
         result = mcp_close_session(session_id=session_id)
