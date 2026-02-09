@@ -584,8 +584,8 @@ if '/sandbox/mcp-server/app' not in sys.path:
     sys.path.insert(0, '/sandbox/mcp-server/app')
 if '/sandbox/mcp-server' not in sys.path:
     sys.path.insert(0, '/sandbox/mcp-server')
-# ✅ 切换工作目录到 mcp-server/app
-os.chdir('/sandbox/mcp-server/app')
+# ✅ 切换工作目录到 mcp-server，确保相对路径 'config/env_configs.yaml' 能正确解析
+os.chdir('/sandbox/mcp-server')
 """
             # 将路径设置代码添加到用户代码前面
             code = path_setup_code + "\n" + code
