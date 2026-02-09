@@ -324,7 +324,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
             logger.info(f"[GIT_OPERATION] 容器内目录不存在，执行克隆操作...")
             
             # 在容器内执行 git clone
-            clone_cmd = f"cd /sandbox && git clone -b {REPO_BRANCH} {REPO_URL} mcp-server"
+            clone_cmd = f"sh -c 'cd /sandbox && git clone -b {REPO_BRANCH} {REPO_URL} mcp-server'"
             logger.info(f"[GIT_OPERATION] 执行命令: {clone_cmd}")
             
             clone_result = session.execute_command(clone_cmd)
