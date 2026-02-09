@@ -316,8 +316,23 @@ async def _handle_git_operation(code: str, session_id: str, session):
     
     try:
         # ✅ 检查容器内目录是否存在
-        check_dir_result = session.execute_command(f"test -d {REPO_DIR} && echo 'exists' || echo 'not_exists'")
-        dir_exists = check_dir_result.stdout.strip() == 'exists'
+        check_cmd = f"test -d {REPO_DIR} && echo 'exists' || echo 'not_exists'"
+        logger.info(f"[GIT_OPERATION] 执行目录检查命令: {check_cmd}")
+        
+        check_dir_result = session.execute_command(check_cmd)
+        
+        # ✅ 添加详细的调试日志
+        logger.info(f"[GIT_OPERATION] 目录检查 - exit_code: {check_dir_result.exit_code}")
+        logger.info(f"[GIT_OPERATION] 目录检查 - stdout: '{check_dir_result.stdout}'")
+        logger.info(f"[GIT_OPERATION] 目录检查 - stderr: '{check_dir_result.stderr}'")
+        logger.info(f"[GIT_OPERATION] 目录检查 - stdout.strip(): '{check_dir_result.stdout.strip()}'")
+        logger.info(f"[GIT_OPERATION] 目录检查 - stdout length: {len(check_dir_result.stdout)}")
+        
+        # ✅ 更健壮的判断逻辑
+        stdout_stripped = check_dir_result.stdout.strip()
+        dir_exists = 'exists' in stdout_stripped
+        
+        logger.info(f"[GIT_OPERATION] 目录是否存在判断结果: dir_exists={dir_exists}")
         
         if not dir_exists:
             # ========== 目录不存在：执行克隆操作 ==========
