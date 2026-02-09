@@ -330,7 +330,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
         
         # ✅ 更健壮的判断逻辑
         stdout_stripped = check_dir_result.stdout.strip()
-        dir_exists = 'exists' in stdout_stripped
+        dir_exists = (stdout_stripped == 'exists')
         
         logger.info(f"[GIT_OPERATION] 目录是否存在判断结果: dir_exists={dir_exists}")
         
@@ -421,7 +421,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
         
         # 检查文件是否存在
         check_file_result = session.execute_command(f"sh -c 'test -f {tool_file_path} && echo exists || echo not_exists'")
-        file_exists = check_file_result.stdout.strip() == 'exists'
+        file_exists = (check_file_result.stdout.strip() == 'exists')
         
         if file_exists:
             logger.info(f"[GIT_OPERATION] 文件已存在，更新代码到文件: {tool_file_path}")
@@ -450,7 +450,8 @@ async def _handle_git_operation(code: str, session_id: str, session):
 
         # ✅ 验证文件是否写入成功
         verify_result = session.execute_command(f"sh -c 'test -f {tool_file_path} && echo exists || echo not_found'")
-        logger.info(f"[GIT_OPERATION] 文件验证结果: {verify_result.stdout.strip()}")
+        verify_exists = (verify_result.stdout.strip() == 'exists')  # ✅ 改为完全匹配
+        logger.info(f"[GIT_OPERATION] 文件验证结果: {verify_result.stdout.strip()}, exists={verify_exists}")
         
     except Exception as e:
         logger.error(f"[GIT_OPERATION] 容器内 Git 操作失败: {e}")
