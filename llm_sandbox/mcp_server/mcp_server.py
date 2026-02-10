@@ -91,6 +91,9 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Initializing container pools on startup...")
     
+    from llm_sandbox.mcp_server.server import _start_cleanup_task
+    _start_cleanup_task()
+
     # 从环境变量读取需要预热的语言列表
     prewarm_languages = os.environ.get("PREWARM_LANGUAGES", "python").split(",")
     prewarm_languages = [lang.strip() for lang in prewarm_languages]
@@ -103,7 +106,7 @@ async def lifespan(app: FastAPI):
             logger.info(f"Creating container pool for {language}...")
             # 调用 server.py 中的内部函数来创建池
             from llm_sandbox.mcp_server.server import _get_or_create_pool
-            pool = _get_or_create_pool(language)
+            pool = await _get_or_create_pool(language)  # ✅ await
             logger.info(f"Container pool for {language} created, waiting for pre-warming...")
             
             # ✅ 等待容器池预热完成
@@ -112,7 +115,7 @@ async def lifespan(app: FastAPI):
             start_time = time.time()
             
             while True:
-                stats = pool.get_stats()
+                stats = await asyncio.to_thread(pool.get_stats)
                 idle_count = stats["state_counts"].get("idle", 0)
                 total_count = stats["total_size"]
                 
@@ -146,7 +149,7 @@ async def lifespan(app: FastAPI):
     
     for lang, pool in _pool_managers.items():
         try:
-            pool.close()
+            await asyncio.to_thread(pool.close)
             logger.info(f"Closed pool for {lang}")
         except Exception as e:
             logger.error(f"Error closing pool for {lang}: {e}")
@@ -234,7 +237,10 @@ async def create_session(request: CreateSessionRequest):
         logger.info(f"Creating session for language: {request.language}, libraries: {request.libraries}")
         
         # 调用 MCP server 的 create_session 函数
-        result = mcp_create_session(language=request.language, libraries=request.libraries)  # ✅ 传递 libraries 参数
+        result = await mcp_create_session(
+            language=request.language, 
+            libraries=request.libraries
+        )  # ✅ 传递 libraries 参数
         
         # 解析返回的 TextContent
         result_data = json.loads(result.text)
@@ -319,7 +325,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
         check_cmd = f"sh -c 'test -d {REPO_DIR} && echo exists || echo not_exists'"
         logger.info(f"[GIT_OPERATION] 执行目录检查命令: {check_cmd}")
         
-        check_dir_result = session.execute_command(check_cmd)
+        check_dir_result = await asyncio.to_thread(session.execute_command, check_cmd)
         
         # ✅ 添加详细的调试日志
         logger.info(f"[GIT_OPERATION] 目录检查 - exit_code: {check_dir_result.exit_code}")
@@ -342,7 +348,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
             clone_cmd = f"sh -c 'cd /sandbox && git clone -b {REPO_BRANCH} {REPO_URL} mcp-server'"
             logger.info(f"[GIT_OPERATION] 执行命令: {clone_cmd}")
             
-            clone_result = session.execute_command(clone_cmd)
+            clone_result = await asyncio.to_thread(session.execute_command, clone_cmd)
             
             logger.info(f"[GIT_OPERATION] git clone 返回码: {clone_result.exit_code}")
             logger.info(f"[GIT_OPERATION] git clone stdout: {clone_result.stdout}")
@@ -361,7 +367,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
             # 步骤1: checkout 掉所有未提交的文件
             logger.info("[GIT_OPERATION] 步骤1: checkout 所有未提交文件...")
             checkout_all_cmd = f"cd {REPO_DIR} && git checkout ."
-            checkout_all_result = session.execute_command(checkout_all_cmd)
+            checkout_all_result = await asyncio.to_thread(session.execute_command, checkout_all_cmd)
             
             logger.info(f"[GIT_OPERATION] git checkout . 返回码: {checkout_all_result.exit_code}")
             
@@ -375,7 +381,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
             # 步骤2: 切换到 medical 分支
             logger.info(f"[GIT_OPERATION] 步骤2: 切换到 {REPO_BRANCH} 分支...")
             checkout_cmd = f"cd {REPO_DIR} && git checkout {REPO_BRANCH}"
-            checkout_result = session.execute_command(checkout_cmd)
+            checkout_result = await asyncio.to_thread(session.execute_command, checkout_cmd)
             
             logger.info(f"[GIT_OPERATION] git checkout {REPO_BRANCH} 返回码: {checkout_result.exit_code}")
             
@@ -389,7 +395,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
             # 步骤3: 拉取最新代码
             logger.info(f"[GIT_OPERATION] 步骤3: 拉取 {REPO_BRANCH} 分支最新代码...")
             pull_cmd = f"cd {REPO_DIR} && git pull origin {REPO_BRANCH}"
-            pull_result = session.execute_command(pull_cmd)
+            pull_result = await asyncio.to_thread(session.execute_command, pull_cmd)
             
             logger.info(f"[GIT_OPERATION] git pull 返回码: {pull_result.exit_code}")
             logger.info(f"[GIT_OPERATION] git pull stdout: {pull_result.stdout}")
@@ -411,7 +417,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
         
         # ✅ 确保 tools 目录存在
         logger.info(f"[GIT_OPERATION] 确保工具目录存在: {TOOLS_DIR}")
-        mkdir_result = session.execute_command(f"mkdir -p {TOOLS_DIR}")
+        mkdir_result = await asyncio.to_thread(session.execute_command, f"mkdir -p {TOOLS_DIR}")
         if mkdir_result.exit_code != 0:
             logger.error(f"[GIT_OPERATION] 创建目录失败: {mkdir_result.stderr}")
             raise Exception(f"创建目录失败: {mkdir_result.stderr}")
@@ -420,7 +426,10 @@ async def _handle_git_operation(code: str, session_id: str, session):
         tool_file_path = f"{TOOLS_DIR}/{tool_name}.py"
         
         # 检查文件是否存在
-        check_file_result = session.execute_command(f"sh -c 'test -f {tool_file_path} && echo exists || echo not_exists'")
+        check_file_result = await asyncio.to_thread(
+            session.execute_command,
+            f"sh -c 'test -f {tool_file_path} && echo exists || echo not_exists'"
+        )
         file_exists = (check_file_result.stdout.strip() == 'exists')
         
         if file_exists:
@@ -433,7 +442,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
         content_b64 = base64.b64encode(code.encode('utf-8')).decode('ascii')
         write_cmd = f"echo '{content_b64}' | base64 -d > {tool_file_path}"
         
-        write_result = session.execute_command(write_cmd)
+        write_result = await asyncio.to_thread(session.execute_command, write_cmd)
         
         if write_result.exit_code != 0:
             error_msg = f"写入文件失败: {write_result.stderr}"
@@ -443,13 +452,16 @@ async def _handle_git_operation(code: str, session_id: str, session):
         # ✅ 新增：在 session 绑定中标记已有 mcp-server 代码（移到验证之前，确保一定执行）
         from llm_sandbox.mcp_server.server import _session_bindings, _session_lock
 
-        with _session_lock:
+        async with _session_lock:
             if session_id in _session_bindings:
                 _session_bindings[session_id]["has_mcp_server"] = True
                 logger.info(f"[GIT_OPERATION] ✅ 已标记 session {session_id} 拥有 mcp-server 代码")
 
         # ✅ 验证文件是否写入成功
-        verify_result = session.execute_command(f"sh -c 'test -f {tool_file_path} && echo exists || echo not_found'")
+        verify_result = await asyncio.to_thread(
+            session.execute_command,
+            f"sh -c 'test -f {tool_file_path} && echo exists || echo not_found'"
+        )
         verify_exists = (verify_result.stdout.strip() == 'exists')  # ✅ 改为完全匹配
         logger.info(f"[GIT_OPERATION] 文件验证结果: {verify_result.stdout.strip()}, exists={verify_exists}")
         
@@ -486,7 +498,7 @@ async def execute_code(request: ExecuteCodeRequest):
                 # ✅ 步骤1: 获取 session 对象
                 from llm_sandbox.mcp_server.server import _get_or_create_session, _session_lock, _session_bindings
                 
-                with _session_lock:
+                async with _session_lock:
                     if request.session_id not in _session_bindings:
                         logger.error(f"Session not found: {request.session_id}")
                         raise HTTPException(
@@ -502,7 +514,7 @@ async def execute_code(request: ExecuteCodeRequest):
                     use_artifact = _session_bindings[request.session_id].get("use_artifact", False)
                 
                 # 获取 session 对象
-                session = _get_or_create_session(request.session_id, language, use_artifact)
+                session = await _get_or_create_session(request.session_id, language, use_artifact)
                 
                 # ✅ 步骤2: 在容器内执行 Git 操作
                 await _handle_git_operation(code=request.code, session_id=request.session_id, session=session)
@@ -525,7 +537,7 @@ async def execute_code(request: ExecuteCodeRequest):
             logger.info(f"operation={request.operation}，跳过 Git 操作")
 
         # 调用 MCP server 的 execute_code 函数
-        results = mcp_execute_code(
+        results = await mcp_execute_code(
             code=request.code,
             session_id=request.session_id,
             libraries=request.libraries,
@@ -612,7 +624,7 @@ async def close_session(session_id: str):
         logger.info(f"Closing session: {session_id}")
         
         # 调用 MCP server 的 close_session 函数
-        result = mcp_close_session(session_id=session_id)
+        result = await mcp_close_session(session_id=session_id)
         result_data = json.loads(result.text)
         
         if result_data.get("status") == "not_found":
@@ -653,7 +665,7 @@ async def list_sessions():
         logger.info("Listing all sessions")
         
         # 调用 MCP server 的 list_sessions 函数
-        result = mcp_list_sessions()
+        result = await mcp_list_sessions()
         result_data = json.loads(result.text)
         
         return JSONResponse(content=result_data)

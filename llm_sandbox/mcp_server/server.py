@@ -16,6 +16,8 @@ import ast
 from pathlib import Path
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
+import asyncio
+from asyncio import Lock as AsyncLock
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent
@@ -88,8 +90,8 @@ _pool_managers: Dict[str, any] = {}
 _session_bindings: Dict[str, Dict] = {}
 
 # 线程锁
-_pool_lock = threading.Lock()
-_session_lock = threading.Lock()
+_pool_lock = AsyncLock()
+_session_lock = AsyncLock()
 
 # Session 配置
 SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT", "3600"))  # 1 小时
@@ -132,11 +134,11 @@ def _get_common_libraries(language: str) -> list[str]:
     }
     return common_libs.get(language, [])
 
-def _get_or_create_pool(language: str):
+async def _get_or_create_pool(language: str):
     """Get or create a container pool for the specified language."""
     global _pool_managers
     
-    with _pool_lock:
+    async with _pool_lock:
         if language in _pool_managers:
             return _pool_managers[language]
         
@@ -150,7 +152,8 @@ def _get_or_create_pool(language: str):
         
         logger.info(f"Pre-installing libraries for {language}: {preinstall_libs}")
         
-        pool = create_pool_manager(
+        pool = await asyncio.to_thread(
+            create_pool_manager,
             backend=os.environ.get("BACKEND", "docker"),
             config=_get_pool_config(),
             lang=language,
@@ -165,18 +168,18 @@ def _get_or_create_pool(language: str):
         
         return pool
 
-def _cleanup_expired_sessions():
+async def _cleanup_expired_sessions_async():
     """Clean up expired sessions (background task)."""
     global _session_bindings
     
     while True:
         try:
-            time.sleep(SESSION_CLEANUP_INTERVAL)
+            await asyncio.sleep(SESSION_CLEANUP_INTERVAL)
             
             current_time = time.time()
             expired_sessions = []
             
-            with _session_lock:
+            async with _session_lock:
                 for session_id, binding in _session_bindings.items():
                     if current_time - binding["last_access"] > SESSION_TIMEOUT:
                         expired_sessions.append(session_id)
@@ -188,7 +191,7 @@ def _cleanup_expired_sessions():
                     # 关闭 session（归还容器到池）
                     if binding.get("session"):
                         try:
-                            binding["session"].close()
+                            await asyncio.to_thread(binding["session"].close)
                         except Exception as e:
                             logger.error(f"Error closing session {session_id}: {e}")
                     
@@ -200,11 +203,21 @@ def _cleanup_expired_sessions():
         except Exception as e:
             logger.error(f"Error in session cleanup: {e}")
 
-# ✅ 启动后台清理线程
-_cleanup_thread = threading.Thread(target=_cleanup_expired_sessions, daemon=True)
-_cleanup_thread.start()
+# # ✅ 启动后台清理线程
+# _cleanup_thread = threading.Thread(target=_cleanup_expired_sessions, daemon=True)
+# _cleanup_thread.start()
 
-def _get_or_create_session(session_id: str, language: str, use_artifact: bool = False) -> PooledSandboxSession:
+def _start_cleanup_task():
+    """Start the async cleanup task."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_cleanup_expired_sessions_async())
+        logger.info("Started async cleanup task")
+    except RuntimeError:
+        # 如果没有运行的事件循环，创建一个新的
+        logger.warning("No running event loop, cleanup task will start with server")
+
+async def _get_or_create_session(session_id: str, language: str, use_artifact: bool = False) -> PooledSandboxSession:
     """Get or create a session bound to a specific session_id.
     
     Args:
@@ -217,7 +230,7 @@ def _get_or_create_session(session_id: str, language: str, use_artifact: bool = 
     """
     global _session_bindings
     
-    with _session_lock:
+    async with _session_lock:
         # 如果 session 已存在，更新访问时间并返回
         if session_id in _session_bindings:
             binding = _session_bindings[session_id]
@@ -234,12 +247,12 @@ def _get_or_create_session(session_id: str, language: str, use_artifact: bool = 
         # 创建新的 session
         logger.info(f"Creating new session: {session_id} for language: {language}")
         
-        pool = _get_or_create_pool(language)
+        pool = await _get_or_create_pool(language)
         session_cls = ArtifactPooledSandboxSession if use_artifact else PooledSandboxSession
         
         # 创建并打开 session
         session = session_cls(pool_manager=pool)
-        session.open()  # ✅ 手动打开，不使用 with 语句
+        await asyncio.to_thread(session.open)
         
         # 记录绑定信息
         _session_bindings[session_id] = {
@@ -317,7 +330,7 @@ def _extract_imports_from_code(code: str, language: str) -> list[str]:
 
 # ✅ 新增：创建 session
 @mcp.tool()
-def create_session(language: str = "python", libraries: list[str] | None = None) -> TextContent:
+async def create_session(language: str = "python", libraries: list[str] | None = None) -> TextContent:
     """Create a new debugging session with a dedicated container."""
     try:
         session_id = str(uuid.uuid4())
@@ -326,7 +339,11 @@ def create_session(language: str = "python", libraries: list[str] | None = None)
         logger.info(f"[CREATE_SESSION] Starting session creation: {session_id}, language: {language}, libraries: {libraries}")
         
         # 创建 session
-        session = _get_or_create_session(session_id, language, use_artifact)
+        session = await _get_or_create_session(
+            session_id=session_id,
+            language=language,
+            use_artifact=True
+        )
         logger.info(f"[CREATE_SESSION] Session object created: {session_id}")
         
         # ✅ 如果用户指定了 libraries，则安装并验证
@@ -336,7 +353,7 @@ def create_session(language: str = "python", libraries: list[str] | None = None)
             try:
                 # ✅ 方案1：先安装库（不执行 import）
                 logger.info(f"[CREATE_SESSION] Step 1: Installing libraries via session.install()")
-                session.install(libraries)
+                await asyncio.to_thread(session.install, libraries)
                 logger.info(f"[CREATE_SESSION] Step 1 completed: Libraries installation command executed")
                 
                 # ✅ 方案2：验证库是否真正安装成功
@@ -344,10 +361,11 @@ def create_session(language: str = "python", libraries: list[str] | None = None)
                 verification_code = _generate_verification_code(language, libraries)
                 logger.info(f"[CREATE_SESSION] Verification code:\n{verification_code}")
                 
-                verify_result = session.run(
-                    code=verification_code,
-                    libraries=[],  # 不再安装，只验证
-                    timeout=30,
+                verify_result = await asyncio.to_thread(
+                    session.run,
+                    verification_code,
+                    [],  # libraries
+                    30   # timeout
                 )
                 
                 logger.info(f"[CREATE_SESSION] Verification result - exit_code: {verify_result.exit_code}")
@@ -360,10 +378,11 @@ def create_session(language: str = "python", libraries: list[str] | None = None)
                     # ✅ 尝试重新安装
                     logger.warning(f"[CREATE_SESSION] Attempting to reinstall libraries: {libraries}")
                     import_statements = "\n".join([f"import {lib}" for lib in libraries])
-                    reinstall_result = session.run(
-                        code=import_statements,
-                        libraries=libraries,
-                        timeout=300,
+                    reinstall_result = await asyncio.to_thread(
+                        session.run,
+                        import_statements,
+                        libraries,
+                        300
                     )
                     
                     logger.info(f"[CREATE_SESSION] Reinstall result - exit_code: {reinstall_result.exit_code}")
@@ -429,7 +448,7 @@ def _generate_verification_code(language: str, libraries: list[str]) -> str:
     return f"# Verification for {language} not implemented"
 
 @mcp.tool()
-def execute_code(
+async def execute_code(
     code: str,
     session_id: str,
     libraries: list[str] | None = None,
@@ -453,7 +472,7 @@ def execute_code(
         logger.info(f"[EXECUTE_CODE] Starting code execution in session: {session_id}")
         
         # ✅ 检查 session 是否存在
-        with _session_lock:
+        async with _session_lock:
             if session_id not in _session_bindings:
                 logger.error(f"[EXECUTE_CODE] Session not found: {session_id}")
                 error_result = {
@@ -476,7 +495,7 @@ def execute_code(
         
         # ✅ 获取待安装的库
         pending_libs = []
-        with _session_lock:
+        async with _session_lock:
             if session_id in _session_bindings:
                 pending_libs = _session_bindings[session_id].pop("pending_libraries", [])
         
@@ -493,13 +512,20 @@ def execute_code(
 
         # ✅ 获取 session
         logger.info(f"[EXECUTE_CODE] Getting session object for: {session_id}")
-        session = _get_or_create_session(session_id, language, use_artifact)
+        session = await _get_or_create_session(
+            session_id=session_id,
+            language="python",
+            use_artifact=True
+        )
         logger.info(f"[EXECUTE_CODE] Session object retrieved successfully")
         
         # ✅ 在执行前验证容器状态
         try:
             logger.info(f"[EXECUTE_CODE] Verifying container health...")
-            health_check = session.execute_command("echo 'Container is alive'")
+            health_check = await asyncio.to_thread(
+                session.execute_command, 
+                "echo 'Container is alive'"
+            )
             logger.info(f"[EXECUTE_CODE] Container health check - exit_code: {health_check.exit_code}")
             logger.info(f"[EXECUTE_CODE] Container health check output: {health_check.stdout}")
         except Exception as e:
@@ -511,16 +537,18 @@ def execute_code(
             try:
                 # ✅ 步骤1：先单独调用 install 方法
                 logger.info(f"[EXECUTE_CODE] Step 1: Calling session.install({all_libraries})")
-                session.install(all_libraries)
+                await asyncio.to_thread(session.install, all_libraries)
+                # session.install(all_libraries)
                 logger.info(f"[EXECUTE_CODE] Step 1 completed: session.install() executed")
                 
                 # ✅ 步骤2：验证安装结果
                 logger.info(f"[EXECUTE_CODE] Step 2: Verifying installation...")
                 verification_code = _generate_verification_code(language, all_libraries)
-                verify_result = session.run(
-                    code=verification_code,
-                    libraries=[],  # 不再安装，只验证
-                    timeout=30,
+                verify_result = await asyncio.to_thread(
+                    session.run,
+                    verification_code,
+                    [],  # libraries
+                    30   # timeout
                 )
                 logger.info(f"[EXECUTE_CODE] Verification result - exit_code: {verify_result.exit_code}")
                 logger.info(f"[EXECUTE_CODE] Verification stdout:\n{verify_result.stdout}")
@@ -532,10 +560,11 @@ def execute_code(
                     # ✅ 尝试使用 session.run() 重新安装
                     logger.warning(f"[EXECUTE_CODE] Attempting reinstall via session.run()...")
                     import_statements = "\n".join([f"import {lib}" for lib in all_libraries])
-                    reinstall_result = session.run(
-                        code=import_statements,
-                        libraries=all_libraries,
-                        timeout=300,
+                    reinstall_result = await asyncio.to_thread(
+                        session.run,
+                        import_statements,
+                        all_libraries,
+                        300
                     )
                     logger.info(f"[EXECUTE_CODE] Reinstall result - exit_code: {reinstall_result.exit_code}")
                     logger.info(f"[EXECUTE_CODE] Reinstall stdout:\n{reinstall_result.stdout}")
@@ -558,7 +587,7 @@ def execute_code(
         # ✅ 新增：检查是否需要添加 mcp-server 路径到 sys.path
         # 方式1：检查 session 绑定中的标记
         has_mcp_server = False
-        with _session_lock:
+        async with _session_lock:
             if session_id in _session_bindings:
                 has_mcp_server = _session_bindings[session_id].get("has_mcp_server", False)
                 logger.info(f"[EXECUTE_CODE] Session 标记 has_mcp_server: {has_mcp_server}")
@@ -567,7 +596,10 @@ def execute_code(
         if not has_mcp_server:
             logger.info(f"[EXECUTE_CODE] 检查容器内是否存在 mcp-server 目录...")
             try:
-                check_mcp_dir = session.execute_command("test -d /sandbox/mcp-server && echo 'exists' || echo 'not_exists'")
+                check_mcp_dir = await asyncio.to_thread(
+                    session.execute_command,
+                    "test -d /sandbox/mcp-server && echo 'exists' || echo 'not_exists'"
+                )
                 logger.info(f"[EXECUTE_CODE] 目录检查结果: stdout='{check_mcp_dir.stdout}', stderr='{check_mcp_dir.stderr}', exit_code={check_mcp_dir.exit_code}")
                 has_mcp_server = check_mcp_dir.stdout.strip() == 'exists'
                 logger.info(f"[EXECUTE_CODE] 目录检查判断结果: has_mcp_server={has_mcp_server}")
@@ -599,11 +631,11 @@ os.chdir('/sandbox/mcp-server')
         logger.info(f"[EXECUTE_CODE] Libraries parameter for session.run(): {all_libraries}")
         logger.debug(f"[EXECUTE_CODE] Code to execute:\n{code[:200]}...")  # 只记录前200字符
         
-        result = session.run(
-            code=code,
-            libraries=all_libraries,  # 如果预安装成功，这里应该是空列表
-            timeout=timeout,
-            clear_plots=False,
+        result: ExecutionResult = await asyncio.to_thread(
+            session.run,
+            code,
+            all_libraries,
+            timeout
         )
         
         logger.info(f"[EXECUTE_CODE] Code execution completed - exit_code: {result.exit_code}")
@@ -677,7 +709,7 @@ os.chdir('/sandbox/mcp-server')
 
 # ✅ 新增：关闭 session
 @mcp.tool()
-def close_session(session_id: str) -> TextContent:
+async def close_session(session_id: str) -> TextContent:
     """Close a debugging session and release its container.
     
     Args:
@@ -689,7 +721,7 @@ def close_session(session_id: str) -> TextContent:
     global _session_bindings
     
     try:
-        with _session_lock:
+        async with _session_lock:
             if session_id not in _session_bindings:
                 return TextContent(
                     text=json.dumps({
@@ -704,7 +736,7 @@ def close_session(session_id: str) -> TextContent:
             
             # 关闭 session（归还容器到池）
             if binding.get("session"):
-                binding["session"].close()
+                await asyncio.to_thread(binding["session"].close)
             
             # 删除绑定
             del _session_bindings[session_id]
@@ -729,14 +761,14 @@ def close_session(session_id: str) -> TextContent:
 
 # ✅ 新增：列出所有活跃 session
 @mcp.tool()
-def list_sessions() -> TextContent:
+async def list_sessions() -> TextContent:
     """List all active debugging sessions.
     
     Returns:
         TextContent: List of active sessions
     """
     try:
-        with _session_lock:
+        async with _session_lock:
             sessions = []
             current_time = time.time()
             
@@ -822,20 +854,23 @@ def main() -> None:
     logger.info("Pool configuration: max_size=%s, min_size=%s, idle_timeout=%s", 
                 os.environ.get("POOL_MAX_SIZE", "10"),
                 os.environ.get("POOL_MIN_SIZE", "0"),
-                os.environ.get("POOL_IDLE_TIMEOUT", "7200.0"))  # ✅ 添加 idle_timeout 日志
-    logger.info("Session timeout: %s seconds (%.1f hours)", SESSION_TIMEOUT, SESSION_TIMEOUT/3600)  # ✅ 显示小时数
+                os.environ.get("POOL_IDLE_TIMEOUT", "7200.0"))
+    logger.info("Session timeout: %s seconds (%.1f hours)", SESSION_TIMEOUT, SESSION_TIMEOUT/3600)
     
-    # 注册清理函数
+    # ✅ 修改：注册异步清理函数
     import atexit
-    def cleanup():
+    
+    async def cleanup_async():
+        """异步清理函数"""
         logger.info("Cleaning up sessions and pools...")
         
         # 关闭所有 session
-        with _session_lock:
+        async with _session_lock:
             for session_id, binding in list(_session_bindings.items()):
                 try:
                     if binding.get("session"):
-                        binding["session"].close()
+                        # ✅ 修改：使用 asyncio.to_thread
+                        await asyncio.to_thread(binding["session"].close)
                     logger.info(f"Closed session: {session_id}")
                 except Exception as e:
                     logger.error(f"Error closing session {session_id}: {e}")
@@ -843,12 +878,22 @@ def main() -> None:
         # 关闭所有池
         for lang, pool in _pool_managers.items():
             try:
-                pool.close()
+                # ✅ 修改：使用 asyncio.to_thread
+                await asyncio.to_thread(pool.close)
                 logger.info(f"Closed pool for {lang}")
             except Exception as e:
                 logger.error(f"Error closing pool for {lang}: {e}")
     
-    atexit.register(cleanup)
+    def cleanup_sync():
+        """同步包装函数，用于 atexit"""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(cleanup_async())
+        except RuntimeError:
+            # 如果没有运行的事件循环，使用 asyncio.run
+            asyncio.run(cleanup_async())
+    
+    atexit.register(cleanup_sync)
     
     mcp.run()
 
