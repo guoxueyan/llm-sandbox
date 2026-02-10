@@ -39,7 +39,7 @@ def setup_logging():
     log_filename = log_dir / f"sandbox-{datetime.now().strftime('%Y-%m-%d')}.log"
     
     # 配置日志格式
-    log_format = "[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s"
+    log_format = "[%(asctime)s] [%(name)s] [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
     
     # 创建根 logger
@@ -366,10 +366,12 @@ async def _handle_git_operation(code: str, session_id: str, session):
             
             # 步骤1: checkout 掉所有未提交的文件
             logger.info("[GIT_OPERATION] 步骤1: checkout 所有未提交文件...")
-            checkout_all_cmd = f"cd {REPO_DIR} && git checkout ."
+            checkout_all_cmd = f"sh -c 'cd {REPO_DIR} && git checkout .'"
             checkout_all_result = await asyncio.to_thread(session.execute_command, checkout_all_cmd)
             
             logger.info(f"[GIT_OPERATION] git checkout . 返回码: {checkout_all_result.exit_code}")
+            logger.info(f"[GIT_OPERATION] git checkout . stdout: {checkout_all_result.stdout}")  # ✅ 添加 stdout 日志
+            logger.info(f"[GIT_OPERATION] git checkout . stderr: {checkout_all_result.stderr}")  # ✅ 添加 stderr 日志
             
             if checkout_all_result.exit_code != 0:
                 error_msg = f"git checkout . 失败: {checkout_all_result.stderr}"
@@ -380,7 +382,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
             
             # 步骤2: 切换到 medical 分支
             logger.info(f"[GIT_OPERATION] 步骤2: 切换到 {REPO_BRANCH} 分支...")
-            checkout_cmd = f"cd {REPO_DIR} && git checkout {REPO_BRANCH}"
+            checkout_cmd = f"sh -c 'cd {REPO_DIR} && git checkout {REPO_BRANCH}'"
             checkout_result = await asyncio.to_thread(session.execute_command, checkout_cmd)
             
             logger.info(f"[GIT_OPERATION] git checkout {REPO_BRANCH} 返回码: {checkout_result.exit_code}")
@@ -394,7 +396,7 @@ async def _handle_git_operation(code: str, session_id: str, session):
             
             # 步骤3: 拉取最新代码
             logger.info(f"[GIT_OPERATION] 步骤3: 拉取 {REPO_BRANCH} 分支最新代码...")
-            pull_cmd = f"cd {REPO_DIR} && git pull origin {REPO_BRANCH}"
+            pull_cmd = f"sh -c 'cd {REPO_DIR} && git pull origin {REPO_BRANCH}'"
             pull_result = await asyncio.to_thread(session.execute_command, pull_cmd)
             
             logger.info(f"[GIT_OPERATION] git pull 返回码: {pull_result.exit_code}")

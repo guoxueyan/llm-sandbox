@@ -40,7 +40,7 @@ def setup_logging():
     log_filename = log_dir / f"sandbox-{datetime.now().strftime('%Y-%m-%d')}.log"
     
     # 配置日志格式
-    log_format = "[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s"
+    log_format = "[%(asctime)s] [%(name)s] [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
     
     # 创建根 logger
