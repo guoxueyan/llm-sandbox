@@ -70,6 +70,13 @@ class DockerPoolManager(ContainerPoolManager):
         """
         from llm_sandbox.docker import SandboxDockerSession
 
+        volumes = {
+            '/apsarapangu/disk5/sandbox-data': {
+                'bind': '/sandbox',  # Container workdir
+                'mode': 'rw'
+            }
+        }
+
         # Create session with same configuration as the pool
         # The session handles all initialization automatically
         return SandboxDockerSession(
@@ -78,6 +85,7 @@ class DockerPoolManager(ContainerPoolManager):
             dockerfile=self.dockerfile,
             lang=str(self.lang),
             runtime_configs=self.runtime_configs,
+            volumes=volumes,
             **self.session_kwargs,
         )
 

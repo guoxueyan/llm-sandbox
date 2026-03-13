@@ -213,12 +213,12 @@ class PooledSandboxSession:
             case SandboxBackend.DOCKER:
                 from llm_sandbox.docker import SandboxDockerSession
 
-                volumes = {
-                    '/apsarapangu/disk5/sandbox-data': {
-                    'bind': self._workdir,  # "/sandbox"
-                    'mode': 'rw'
-                }
-                }
+                # volumes = {
+                #     '/apsarapangu/disk5/sandbox-data': {
+                #     'bind': self._workdir,  # "/sandbox"
+                #     'mode': 'rw'
+                # }
+                # }
                 # Validate that pool-managed parameters are not passed
                 session_kwargs = self._session_kwargs.copy()
                 if "client" in session_kwargs:
@@ -238,7 +238,7 @@ class PooledSandboxSession:
                     container_id=container_id,  # Connect to existing pooled container
                     skip_environment_setup=True,  # Pool already set up the environment
                     # skip_environment_setup=False,  # Pool already set up the environment
-                    volumes=volumes,  # Pass volume bindings to ensure correct workdir mapping
+                    # volumes=volumes,  # Pass volume bindings to ensure correct workdir mapping
                     **session_kwargs,
                 )
 
