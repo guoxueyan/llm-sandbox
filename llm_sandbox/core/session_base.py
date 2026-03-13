@@ -465,6 +465,7 @@ class BaseSession(
         def _run_code() -> ConsoleOutput:
             self.install(libraries)
             temp_file_path = None
+            code_dest_path_posix = None
             try:
                 with tempfile.NamedTemporaryFile(
                     delete=False,  # Set delete=False so we can access it after the 'with' block
@@ -510,6 +511,12 @@ class BaseSession(
                 # Clean up the temporary file if it was created
                 if temp_file_path:
                     Path(temp_file_path).unlink(missing_ok=True)
+                if code_dest_path_posix:
+                    try:
+                        self.execute_command(f"rm -f {code_dest_path_posix}")
+                    except Exception as e:  # noqa: BLE001
+                        self._log(f"Error cleaning up code file in container: {e}", "error")
+                        pass
 
         try:
             result = self._execute_with_timeout(_run_code, timeout=actual_timeout)

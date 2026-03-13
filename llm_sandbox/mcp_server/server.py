@@ -635,7 +635,8 @@ os.chdir('/sandbox/mcp-server')
             session.run,
             code,
             all_libraries,
-            timeout
+            timeout,
+            clear_plots=True
         )
         
         logger.info(f"[EXECUTE_CODE] Code execution completed - exit_code: {result.exit_code}")
@@ -895,6 +896,11 @@ def main() -> None:
     
     atexit.register(cleanup_sync)
     
+    @mcp.server.on_event("startup")
+    async def on_startup():
+        asyncio.get_running_loop().create_task(_cleanup_expired_sessions_async())
+        logger.info("Started async cleanup task")
+
     mcp.run()
 
 if __name__ == "__main__":
