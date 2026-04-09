@@ -356,6 +356,9 @@ async def create_session(language: str = "python", libraries: list[str] | None =
                 # ✅ 方案1：先安装库（不执行 import）
                 logger.info(f"[CREATE_SESSION] Step 1: Installing libraries via session.install()")
                 await asyncio.to_thread(session.install, libraries)
+                debug_result = await asyncio.to_thread(session.execute_command, 
+                    '/sandbox/.venv/bin/pip show numpy')
+                logger.info(f"[CREATE_SESSION] pip show numpy: {debug_result}")
                 logger.info(f"[CREATE_SESSION] Step 1 completed: Libraries installation command executed")
                 
                 # ✅ 方案2：验证库是否真正安装成功
@@ -393,13 +396,36 @@ async def create_session(language: str = "python", libraries: list[str] | None =
                     if reinstall_result.exit_code != 0:
                         logger.error(f"[CREATE_SESSION] Reinstall also failed!")
                         logger.error(f"[CREATE_SESSION] Reinstall stderr:\n{reinstall_result.stderr}")
+                        # ✅ 安装失败，返回带警告的 success（session 已创建，但库未安装成功）
+                        result = {
+                            "status": "warning",
+                            "session_id": session_id,
+                            "language": language,
+                            "visualization_support": use_artifact,
+                            "timeout": SESSION_TIMEOUT,
+                            "message": f"Session created but library installation failed for: {libraries}. "
+                                       f"You may need to install them manually. Error: {reinstall_result.stderr[:500]}",
+                            "failed_libraries": libraries,
+                        }
+                        logger.warning(f"[CREATE_SESSION] Returning warning result for session {session_id}")
+                        return TextContent(text=json.dumps(result, indent=2), type="text")
                 else:
                     logger.info(f"[CREATE_SESSION] ✅ Libraries verified successfully in session {session_id}")
                     
             except Exception as e:
                 logger.error(f"[CREATE_SESSION] Failed to install/verify libraries in session {session_id}: {e}", exc_info=True)
-                # 继续创建 session，但记录警告
-                logger.warning(f"[CREATE_SESSION] Session {session_id} created but library installation may have failed")
+                # ✅ 安装异常，返回带警告的结果
+                result = {
+                    "status": "warning",
+                    "session_id": session_id,
+                    "language": language,
+                    "visualization_support": use_artifact,
+                    "timeout": SESSION_TIMEOUT,
+                    "message": f"Session created but library installation encountered an error: {str(e)}. "
+                               f"You may need to install libraries manually.",
+                    "failed_libraries": libraries,
+                }
+                return TextContent(text=json.dumps(result, indent=2), type="text")
         
         result = {
             "status": "success",
@@ -554,7 +580,7 @@ async def execute_code(
                 return [TextContent(text=json.dumps(error_result, indent=2), type="text")]
         except Exception as e:
             logger.warning(f"[EXECUTE_CODE] Error checking session validity: {e}, proceeding anyway")
-            
+
         
         # ✅ 如果有库需要安装，先单独安装并验证
         if all_libraries:
