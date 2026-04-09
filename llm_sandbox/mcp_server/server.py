@@ -96,7 +96,9 @@ _session_lock = AsyncLock()
 # Session 配置
 SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT", "3600"))  # 1 小时
 SESSION_CLEANUP_INTERVAL = int(os.environ.get("SESSION_CLEANUP_INTERVAL", "300"))  # 5 分钟
-
+PIP_INDEX_URL = os.environ.get("PIP_INDEX_URL", "https://mirrors.aliyun.com/pypi/simple/")
+PIP_TRUSTED_HOST = os.environ.get("PIP_TRUSTED_HOST", "mirrors.aliyun.com")
+LIBRARY_INSTALL_TIMEOUT = int(os.environ.get("LIBRARY_INSTALL_TIMEOUT", "300"))
 LOCAL_MODULES = {'env_config_manager'}  # 本地模块列表，不应该通过 pip 安装
 
 def _get_backend() -> SandboxBackend:
@@ -256,6 +258,18 @@ async def _get_or_create_session(session_id: str, language: str, use_artifact: b
         session = session_cls(pool_manager=pool)
         await asyncio.to_thread(session.open)
         
+        if language == "python":
+            try:
+                pip_conf_cmd = (
+                    f'sh -c "mkdir -p /root/.config/pip && '
+                    f"echo '[global]\\nindex-url = {PIP_INDEX_URL}\\ntrusted-host = {PIP_TRUSTED_HOST}\\ntimeout = 60' "
+                    f'> /root/.config/pip/pip.conf"'
+                )
+                await asyncio.to_thread(session.execute_command, pip_conf_cmd)
+                logger.info(f"Configured pip mirror source for session: {session_id}")
+            except Exception as e:
+                logger.warning(f"Failed to configure pip mirror source: {e}")
+
         # 记录绑定信息
         _session_bindings[session_id] = {
             "session": session,
@@ -355,10 +369,26 @@ async def create_session(language: str = "python", libraries: list[str] | None =
             try:
                 # ✅ 方案1：先安装库（不执行 import）
                 logger.info(f"[CREATE_SESSION] Step 1: Installing libraries via session.install()")
-                await asyncio.to_thread(session.install, libraries)
-                debug_result = await asyncio.to_thread(session.execute_command, 
-                    '/sandbox/.venv/bin/pip show numpy')
-                logger.info(f"[CREATE_SESSION] pip show numpy: {debug_result}")
+                
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(session.install, libraries),
+                        timeout=LIBRARY_INSTALL_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"[CREATE_SESSION] Library installation timed out after {LIBRARY_INSTALL_TIMEOUT}s for: {libraries}")
+                    result = {
+                        "status": "warning",
+                        "session_id": session_id,
+                        "language": language,
+                        "visualization_support": use_artifact,
+                        "timeout": SESSION_TIMEOUT,
+                        "message": f"Session created but library installation timed out after {LIBRARY_INSTALL_TIMEOUT}s for: {libraries}. "
+                                   f"You can try installing manually via execute_code.",
+                        "failed_libraries": libraries,
+                    }
+                    return TextContent(text=json.dumps(result, indent=2), type="text")
+
                 logger.info(f"[CREATE_SESSION] Step 1 completed: Libraries installation command executed")
                 
                 # ✅ 方案2：验证库是否真正安装成功
