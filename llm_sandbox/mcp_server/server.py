@@ -107,17 +107,19 @@ def _get_backend() -> SandboxBackend:
 
 def _get_pool_config() -> PoolConfig:
     """Get pool configuration from environment variables."""
+    pool_idle_timeout = float(os.environ.get("POOL_IDLE_TIMEOUT", str(SESSION_TIMEOUT * 2)))
+    
     return PoolConfig(
         # 基础配置
         max_pool_size=int(os.environ.get("POOL_MAX_SIZE", "100")),
         min_pool_size=int(os.environ.get("POOL_MIN_SIZE", "10")),
         
-        # 超时配置
-        idle_timeout=float(os.environ.get("POOL_IDLE_TIMEOUT", "3600.0")),
+        # 超时配置 - 统一基于最后使用时间
+        idle_timeout=pool_idle_timeout,
         acquisition_timeout=float(os.environ.get("POOL_ACQUISITION_TIMEOUT", "30.0")),
         
-        # 生命周期配置
-        max_container_lifetime=float(os.environ.get("POOL_MAX_LIFETIME", "3600.0")),
+        # 生命周期配置 - 默认不限制最大生命周期，统一由 idle_timeout 控制
+        max_container_lifetime=None,
         health_check_interval=float(os.environ.get("POOL_HEALTH_CHECK_INTERVAL", "60.0")),
         
         # 策略配置
@@ -521,15 +523,38 @@ async def execute_code(
         
         # ✅ 在执行前验证容器状态
         try:
-            logger.info(f"[EXECUTE_CODE] Verifying container health...")
-            health_check = await asyncio.to_thread(
-                session.execute_command, 
-                "echo 'Container is alive'"
-            )
-            logger.info(f"[EXECUTE_CODE] Container health check - exit_code: {health_check.exit_code}")
-            logger.info(f"[EXECUTE_CODE] Container health check output: {health_check.stdout}")
+            session_valid = True
+            if hasattr(session, '_session'):
+                # ArtifactPooledSandboxSession
+                if session._session._backend_session is None or not getattr(session._session._backend_session, 'container', None):
+                    session_valid = False
+            elif hasattr(session, '_backend_session'):
+                # PooledSandboxSession
+                if session._backend_session is None or not getattr(session._backend_session, 'container', None):
+                    session_valid = False
+
+            if not session_valid:
+                logger.error(f"[EXECUTE_CODE] Session {session_id} backend container is invalid (expired or destroyed)")
+                # 清理失效的 session 绑定
+                async with _session_lock:
+                    if session_id in _session_bindings:
+                        old_binding = _session_bindings[session_id]
+                        try:
+                            await asyncio.to_thread(old_binding["session"].close)
+                        except Exception:
+                            pass
+                        del _session_bindings[session_id]
+
+                error_result = {
+                    "status": "error",
+                    "error_type": "session_expired",
+                    "session_id": session_id,
+                    "message": f"Session '{session_id}' has expired: the underlying container has been destroyed due to inactivity timeout ({SESSION_TIMEOUT}s). Please create a new session using create_session()."
+                }
+                return [TextContent(text=json.dumps(error_result, indent=2), type="text")]
         except Exception as e:
-            logger.error(f"[EXECUTE_CODE] Container health check failed: {e}", exc_info=True)
+            logger.warning(f"[EXECUTE_CODE] Error checking session validity: {e}, proceeding anyway")
+            
         
         # ✅ 如果有库需要安装，先单独安装并验证
         if all_libraries:

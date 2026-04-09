@@ -61,11 +61,11 @@ class PoolConfig(BaseModel):
     )
 
     max_container_lifetime: float | None = Field(
-        default=3600.0,
+        default=None,
         gt=0,
-        description="Maximum lifetime of a container in seconds before recycling (None for no limit)",
+        description="Maximum lifetime of a container in seconds before recycling (None for no limit). "
+                    "When set to None, container recycling is based solely on idle_timeout.",
     )
-
     max_container_uses: int | None = Field(
         default=None,
         ge=1,

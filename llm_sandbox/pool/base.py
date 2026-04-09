@@ -114,8 +114,8 @@ class PooledContainer:
 
         """
         if max_lifetime is not None:
-            age = time.time() - self.created_at
-            if age > max_lifetime:
+            idle_time = time.time() - self.last_used_at
+            if idle_time > max_lifetime:
                 return True
 
         return max_uses is not None and self.use_count >= max_uses
