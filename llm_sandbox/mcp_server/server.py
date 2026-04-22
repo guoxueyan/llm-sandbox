@@ -527,9 +527,11 @@ async def execute_code(
             }
             return [TextContent(text=json.dumps(error_result, indent=2), type="text")]
         
+        _exec_total_start = time.time()
         logger.info(f"[EXECUTE_CODE] Starting code execution in session: {session_id}")
         
         # ✅ 检查 session 是否存在
+        _step_start = time.time()
         async with _session_lock:
             if session_id not in _session_bindings:
                 logger.error(f"[EXECUTE_CODE] Session not found: {session_id}")
@@ -544,6 +546,7 @@ async def execute_code(
             language = _session_bindings[session_id]["language"]
             use_artifact = _session_bindings[session_id].get("use_artifact", False)
             logger.info(f"[EXECUTE_CODE] Session info - language: {language}, use_artifact: {use_artifact}")
+        logger.info(f"[EXECUTE_CODE][TIMING] session_lookup took {(time.time() - _step_start)*1000:.1f}ms")
         
         # ✅ 自动检测依赖
         detected_packages = []
@@ -569,15 +572,17 @@ async def execute_code(
             logger.info(f"[EXECUTE_CODE] No libraries to install")
 
         # ✅ 获取 session
+        _step_start = time.time()
         logger.info(f"[EXECUTE_CODE] Getting session object for: {session_id}")
         session = await _get_or_create_session(
             session_id=session_id,
             language="python",
             use_artifact=True
         )
-        logger.info(f"[EXECUTE_CODE] Session object retrieved successfully")
+        logger.info(f"[EXECUTE_CODE][TIMING] get_or_create_session took {(time.time() - _step_start)*1000:.1f}ms")
         
         # ✅ 在执行前验证容器状态
+        _step_start = time.time()
         try:
             session_valid = True
             if hasattr(session, '_session'):
@@ -610,9 +615,11 @@ async def execute_code(
                 return [TextContent(text=json.dumps(error_result, indent=2), type="text")]
         except Exception as e:
             logger.warning(f"[EXECUTE_CODE] Error checking session validity: {e}, proceeding anyway")
+        logger.info(f"[EXECUTE_CODE][TIMING] validate_session took {(time.time() - _step_start)*1000:.1f}ms")
 
         
         # ✅ 如果有库需要安装，先单独安装并验证
+        _step_start = time.time()
         if all_libraries:
             logger.info(f"[EXECUTE_CODE] Pre-installing libraries before code execution...")
             try:
@@ -675,50 +682,43 @@ async def execute_code(
             except Exception as e:
                 logger.error(f"[EXECUTE_CODE] Pre-installation failed with exception: {e}", exc_info=True)
                 # 继续执行，让用户看到完整的错误信息
-        
-        # ✅ 新增：检查是否需要添加 mcp-server 路径到 sys.path
-        # 方式1：检查 session 绑定中的标记
+        logger.info(f"[EXECUTE_CODE][TIMING] library_install took {(time.time() - _step_start)*1000:.1f}ms")
+
+        # ✅ 检查是否需要添加 mcp-server 路径到 sys.path（带缓存，避免每次都 exec 容器命令）
+        _step_start = time.time()
         has_mcp_server = False
+        mcp_server_checked = False
         async with _session_lock:
             if session_id in _session_bindings:
                 has_mcp_server = _session_bindings[session_id].get("has_mcp_server", False)
-                logger.info(f"[EXECUTE_CODE] Session 标记 has_mcp_server: {has_mcp_server}")
+                mcp_server_checked = _session_bindings[session_id].get("mcp_server_checked", False)
 
-        # 方式2：如果没有标记，再检查容器内目录
-        if not has_mcp_server:
-            logger.info(f"[EXECUTE_CODE] 检查容器内是否存在 mcp-server 目录...")
+        # 仅在首次未检查过时才执行容器内目录检查
+        if not has_mcp_server and not mcp_server_checked:
+            logger.info(f"[EXECUTE_CODE] 首次检查容器内是否存在 mcp-server 目录...")
             try:
                 check_mcp_dir = await asyncio.to_thread(
                     session.execute_command,
                     "test -d /sandbox/mcp-server && echo 'exists' || echo 'not_exists'"
                 )
-                logger.info(f"[EXECUTE_CODE] 目录检查结果: stdout='{check_mcp_dir.stdout}', stderr='{check_mcp_dir.stderr}', exit_code={check_mcp_dir.exit_code}")
                 has_mcp_server = check_mcp_dir.stdout.strip() == 'exists'
-                logger.info(f"[EXECUTE_CODE] 目录检查判断结果: has_mcp_server={has_mcp_server}")
+                logger.info(f"[EXECUTE_CODE] 目录检查结果: has_mcp_server={has_mcp_server}")
+                # 缓存检查结果，后续调用不再重复检查
+                async with _session_lock:
+                    if session_id in _session_bindings:
+                        _session_bindings[session_id]["mcp_server_checked"] = True
+                        _session_bindings[session_id]["has_mcp_server"] = has_mcp_server
             except Exception as e:
                 logger.error(f"[EXECUTE_CODE] 目录检查失败: {e}")
                 has_mcp_server = False
-
-        if has_mcp_server:
-            logger.info(f"[EXECUTE_CODE] ✅ 检测到 mcp-server 目录，将添加到 sys.path")
-            # 在用户代码前添加 sys.path 设置
-            path_setup_code = """import sys
-import os
-if '/sandbox/mcp-server/app' not in sys.path:
-    sys.path.insert(0, '/sandbox/mcp-server/app')
-if '/sandbox/mcp-server' not in sys.path:
-    sys.path.insert(0, '/sandbox/mcp-server')
-# ✅ 切换工作目录到 mcp-server，确保相对路径 'config/env_configs.yaml' 能正确解析
-os.chdir('/sandbox/mcp-server')
-"""
-            # 将路径设置代码添加到用户代码前面
-            code = path_setup_code + "\n" + code
-            logger.info(f"[EXECUTE_CODE] ✅ 已添加 sys.path 设置到代码前")
+        elif has_mcp_server:
+            logger.info(f"[EXECUTE_CODE] 使用缓存的 mcp-server 目录检查结果: has_mcp_server=True")
         else:
-            logger.warning(f"[EXECUTE_CODE] ⚠️  未检测到 mcp-server 目录，跳过 sys.path 设置")
-
+            logger.info(f"[EXECUTE_CODE] 已检查过，mcp-server 目录不存在，跳过检查")
+        logger.info(f"[EXECUTE_CODE][TIMING] mcp_server_check took {(time.time() - _step_start)*1000:.1f}ms")
 
         # ✅ 执行用户代码
+        _step_start = time.time()
         logger.info(f"[EXECUTE_CODE] Executing user code...")
         logger.info(f"[EXECUTE_CODE] Libraries parameter for session.run(): {all_libraries}")
         logger.debug(f"[EXECUTE_CODE] Code to execute:\n{code[:200]}...")  # 只记录前200字符
@@ -730,11 +730,12 @@ os.chdir('/sandbox/mcp-server')
             timeout,
             clear_plots=True
         )
+        _run_elapsed = (time.time() - _step_start) * 1000
         
+        logger.info(f"[EXECUTE_CODE][TIMING] session.run() took {_run_elapsed:.1f}ms")
         logger.info(f"[EXECUTE_CODE] Code execution completed - exit_code: {result.exit_code}")
         logger.info(f"[EXECUTE_CODE] Stdout length: {len(result.stdout)} bytes")
-        logger.info(f"[EXECUTE_CODE] Stderr length: {len(result.stderr)} bytes")
-        
+        logger.info(f"[EXECUTE_CODE] Stderr length: {len(result.stderr)} bytes")        
         if result.exit_code != 0:
             logger.error(f"[EXECUTE_CODE] Execution failed with exit_code: {result.exit_code}")
             logger.error(f"[EXECUTE_CODE] Error output:\n{result.stderr}")
@@ -784,6 +785,8 @@ os.chdir('/sandbox/mcp-server')
         result_dict["status"] = "success"
         results.append(TextContent(text=json.dumps(result_dict, indent=2), type="text"))
         
+        _exec_total_elapsed = (time.time() - _exec_total_start) * 1000
+        logger.info(f"[EXECUTE_CODE][TIMING] ========== TOTAL execute_code took {_exec_total_elapsed:.1f}ms ==========")
         logger.info(f"[EXECUTE_CODE] Code execution completed successfully for session: {session_id}")
 
     except Exception as e:

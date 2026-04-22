@@ -3,6 +3,7 @@ import io
 import logging
 import re
 import tarfile
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -266,21 +267,35 @@ class AbstractLanguageHandler(ABC):
             tuple: (execution_result, list_of_plots)
 
         """
+        _total_start = time.time()
+
         # Default implementation for languages without plot support
         if enable_plotting and self.is_support_plot_detection:
             # Inject plot detection code
+            _step_start = time.time()
             injected_code = self.inject_plot_detection_code(code)
+            self.logger.info("[run_with_artifacts][TIMING] inject_plot_detection_code took %.1fms (injected %d chars)",
+                            (time.time() - _step_start) * 1000, len(injected_code) - len(code))
 
             # Run the code with plot detection
+            _step_start = time.time()
             result = container.run(injected_code, libraries, timeout)
+            self.logger.info("[run_with_artifacts][TIMING] container.run() took %.1fms", (time.time() - _step_start) * 1000)
 
             # Extract plots
+            _step_start = time.time()
             plots = self.extract_plots(container, output_dir)
+            self.logger.info("[run_with_artifacts][TIMING] extract_plots took %.1fms (found %d plots)",
+                            (time.time() - _step_start) * 1000, len(plots))
 
+            self.logger.info("[run_with_artifacts][TIMING] total took %.1fms", (time.time() - _total_start) * 1000)
             return result, plots
 
         # Run code without plot detection
+        _step_start = time.time()
         result = container.run(code, libraries, timeout)
+        self.logger.info("[run_with_artifacts][TIMING] container.run() (no plot) took %.1fms", (time.time() - _step_start) * 1000)
+        self.logger.info("[run_with_artifacts][TIMING] total took %.1fms", (time.time() - _total_start) * 1000)
         return result, []
 
     @abstractmethod

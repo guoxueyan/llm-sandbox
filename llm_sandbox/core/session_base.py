@@ -463,10 +463,18 @@ class BaseSession(
         actual_timeout = timeout or self.config.get_execution_timeout()
 
         def _run_code() -> ConsoleOutput:
+            _run_total_start = time.time()
+
+            # Step 1: Install libraries
+            _step_start = time.time()
             self.install(libraries)
+            self.logger.info("[BaseSession.run][TIMING] install_libraries took %.1fms", (time.time() - _step_start) * 1000)
+
             temp_file_path = None
             code_dest_path_posix = None
             try:
+                # Step 2: Write temp file
+                _step_start = time.time()
                 with tempfile.NamedTemporaryFile(
                     delete=False,  # Set delete=False so we can access it after the 'with' block
                     suffix=f".{self.language_handler.file_extension}",
@@ -475,21 +483,18 @@ class BaseSession(
                 ) as code_file:
                     code_file.write(code)
                     temp_file_path = code_file.name
+                self.logger.info("[BaseSession.run][TIMING] write_temp_file took %.1fms", (time.time() - _step_start) * 1000)
 
+                # Step 3: Copy to container
+                _step_start = time.time()
                 code_dest_file = (
                     Path(self.config.workdir) / f"{uuid.uuid4().hex}.{self.language_handler.file_extension}"
                 )
                 code_dest_path_posix = code_dest_file.as_posix()
                 self.copy_to_runtime(temp_file_path, code_dest_path_posix)
+                self.logger.info("[BaseSession.run][TIMING] copy_to_runtime took %.1fms", (time.time() - _step_start) * 1000)
 
-                # Create runtime context for execution
-                # Use venv paths for Python when:
-                # 1. Not skipping environment setup (normal case)
-                # 2. OR when skip_environment_setup=True but using existing container
-                #    (pooled containers have venv)
-                #    Note: For pooled containers, skip_environment_setup=True means
-                #    "don't set up again", but the venv already exists from pool
-                #    initialization, so we should use it.
+                # Step 4: Prepare runtime context and execute
                 use_venv_paths = self.language_handler.name == "python" and (
                     not self.config.skip_environment_setup or self.using_existing_container
                 )
@@ -503,12 +508,18 @@ class BaseSession(
                 commands = self.language_handler.get_execution_commands(
                     code_dest_path_posix, runtime_context=runtime_context
                 )
-                return self.execute_commands(
+
+                _step_start = time.time()
+                result = self.execute_commands(
                     cast("list[str | tuple[str, str | None]]", commands),
                     workdir=self.config.workdir,
                 )
+                self.logger.info("[BaseSession.run][TIMING] execute_commands took %.1fms", (time.time() - _step_start) * 1000)
+                self.logger.info("[BaseSession.run][TIMING] _run_code total took %.1fms", (time.time() - _run_total_start) * 1000)
+                return result
             finally:
                 # Clean up the temporary file if it was created
+                _step_start = time.time()
                 if temp_file_path:
                     Path(temp_file_path).unlink(missing_ok=True)
                 if code_dest_path_posix:
@@ -517,6 +528,7 @@ class BaseSession(
                     except Exception as e:  # noqa: BLE001
                         self._log(f"Error cleaning up code file in container: {e}", "error")
                         pass
+                self.logger.info("[BaseSession.run][TIMING] cleanup took %.1fms", (time.time() - _step_start) * 1000)
 
         try:
             result = self._execute_with_timeout(_run_code, timeout=actual_timeout)
