@@ -277,6 +277,7 @@ async def _get_or_create_session(session_id: str, language: str, use_artifact: b
             "created_at": time.time(),
             "last_access": time.time(),
             "use_artifact": use_artifact,
+            "installed_libraries": set(),  # 缓存已安装的库，避免重复安装
         }
         
         logger.info(f"Session created and bound: {session_id}")
@@ -439,8 +440,17 @@ async def create_session(language: str = "python", libraries: list[str] | None =
                         }
                         logger.warning(f"[CREATE_SESSION] Returning warning result for session {session_id}")
                         return TextContent(text=json.dumps(result, indent=2), type="text")
+                    else:
+                        # reinstall 成功，记录已安装的库到缓存
+                        async with _session_lock:
+                            if session_id in _session_bindings:
+                                _session_bindings[session_id].setdefault("installed_libraries", set()).update(libraries)
                 else:
                     logger.info(f"[CREATE_SESSION] ✅ Libraries verified successfully in session {session_id}")
+                    # 记录已安装的库到缓存
+                    async with _session_lock:
+                        if session_id in _session_bindings:
+                            _session_bindings[session_id].setdefault("installed_libraries", set()).update(libraries)
                     
             except Exception as e:
                 logger.error(f"[CREATE_SESSION] Failed to install/verify libraries in session {session_id}: {e}", exc_info=True)
@@ -566,6 +576,17 @@ async def execute_code(
         # ✅ 合并所有需要安装的库
         all_libraries = list(set((libraries or []) + detected_packages + pending_libs))
         
+        # ✅ 过滤掉已经安装过的库，避免重复安装带来的时延
+        if all_libraries:
+            async with _session_lock:
+                if session_id in _session_bindings:
+                    already_installed = _session_bindings[session_id].get("installed_libraries", set())
+                    new_libraries = [lib for lib in all_libraries if lib not in already_installed]
+                    if len(new_libraries) < len(all_libraries):
+                        skipped = set(all_libraries) - set(new_libraries)
+                        logger.info(f"[EXECUTE_CODE] Skipping already installed libraries: {skipped}")
+                    all_libraries = new_libraries
+        
         if all_libraries:
             logger.info(f"[EXECUTE_CODE] Total libraries to install: {all_libraries}")
         else:
@@ -670,6 +691,10 @@ async def execute_code(
                     
                     if reinstall_result and reinstall_result.exit_code == 0:
                         logger.info(f"[EXECUTE_CODE] ✅ Reinstall succeeded!")
+                        # 记录已安装的库到缓存
+                        async with _session_lock:
+                            if session_id in _session_bindings:
+                                _session_bindings[session_id].setdefault("installed_libraries", set()).update(all_libraries)
                         all_libraries = []  # 清空，避免重复安装
                     else:
                         if reinstall_result:
@@ -677,6 +702,10 @@ async def execute_code(
                             logger.error(f"[EXECUTE_CODE] Reinstall stderr:\n{reinstall_result.stderr}")
                 else:
                     logger.info(f"[EXECUTE_CODE] ✅ All libraries pre-installed and verified successfully!")
+                    # 记录已安装的库到缓存
+                    async with _session_lock:
+                        if session_id in _session_bindings:
+                            _session_bindings[session_id].setdefault("installed_libraries", set()).update(all_libraries)
                     all_libraries = []  # 清空，避免重复安装
                     
             except Exception as e:
