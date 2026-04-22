@@ -257,8 +257,9 @@ class BaseSession(
         if not libraries:
             return
 
-        if self.config.skip_environment_setup:
-            # Log detailed guidance for users
+        if self.config.skip_environment_setup and not self.using_existing_container:
+            # 仅在非池化容器（非已有容器）时才阻止安装
+            # 池化容器虽然 skip_environment_setup=True，但 venv 已在池初始化时创建好
             self._log("Library installation is not supported when skip_environment_setup is True", "error")
             self._log(
                 "Consider either using a pre-configured image or installing libraries using `execute_command` method",
